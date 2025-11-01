@@ -3,6 +3,7 @@ package extension
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,15 +18,16 @@ import (
 )
 
 type ReplicationVirtualTable struct {
-	virtualTableName     string
-	conn                 *sqlite.Conn
-	positionTrackerTable string
-	timeout              time.Duration
-	subscriptions        []*replication.Subscription
-	stmtMu               sync.Mutex
-	mu                   sync.Mutex
-	logger               *slog.Logger
-	loggerCloser         io.Closer
+	virtualTableName   string
+	conn               *sqlite.Conn
+	timeout            time.Duration
+	subscriptions      []*replication.Subscription
+	stmtMu             sync.Mutex
+	loadPositionStmt   *sqlite.Stmt
+	updatePositionStmt *sqlite.Stmt
+	mu                 sync.Mutex
+	logger             *slog.Logger
+	loggerCloser       io.Closer
 }
 
 func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, timeout time.Duration, positionTrackerTable string, loggerDef string) (*ReplicationVirtualTable, error) {
@@ -33,15 +35,24 @@ func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, time
 	if err != nil {
 		return nil, err
 	}
+	loadStmt, _, err := conn.Prepare("SELECT position FROM " + positionTrackerTable + " WHERE slot = ?")
+	if err != nil {
+		return nil, fmt.Errorf("preparing position loader statement: %w", err)
+	}
+	updateStmt, _, err := conn.Prepare("REPLACE INTO " + positionTrackerTable + "(slot, position) VALUES(?, ?)")
+	if err != nil {
+		return nil, fmt.Errorf("preparing position tracker statement: %w", err)
+	}
 
 	return &ReplicationVirtualTable{
-		virtualTableName:     virtualTableName,
-		conn:                 conn,
-		timeout:              timeout,
-		positionTrackerTable: positionTrackerTable,
-		logger:               logger,
-		loggerCloser:         loggerCloser,
-		subscriptions:        make([]*replication.Subscription, 0),
+		virtualTableName:   virtualTableName,
+		conn:               conn,
+		timeout:            timeout,
+		loadPositionStmt:   loadStmt,
+		updatePositionStmt: updateStmt,
+		logger:             logger,
+		loggerCloser:       loggerCloser,
+		subscriptions:      make([]*replication.Subscription, 0),
 	}, nil
 }
 
@@ -61,7 +72,7 @@ func (vt *ReplicationVirtualTable) Disconnect() error {
 	for _, subscription := range vt.subscriptions {
 		subscription.Stop()
 	}
-
+	err = errors.Join(err, vt.loadPositionStmt.Finalize(), vt.updatePositionStmt.Finalize())
 	return err
 }
 
@@ -163,6 +174,25 @@ func (vt *ReplicationVirtualTable) contains(slot string) bool {
 
 func (vt *ReplicationVirtualTable) loader(slot string) replication.CheckpointLoader {
 	return func() (pglogrepl.LSN, error) {
+		err := vt.loadPositionStmt.Reset()
+		if err != nil {
+			return 0, err
+		}
+		vt.loadPositionStmt.BindText(1, slot)
+		hasRow, err := vt.loadPositionStmt.Step()
+		if err != nil {
+			return 0, fmt.Errorf("loading last position for slot %q: %w", slot, err)
+		}
+		if hasRow {
+			positionStr := vt.loadPositionStmt.ColumnText(0)
+			position, err := pglogrepl.ParseLSN(positionStr)
+			if err != nil {
+				return 0, fmt.Errorf("parsing last position %q for slot %q: %w", positionStr, slot, err)
+			}
+			vt.logger.Info("loaded last saved position", "slot", slot, "position", position)
+			return position, nil
+		}
+		vt.logger.Info("no saved position found, starting from beginning", "slot", slot)
 		return 0, nil
 	}
 }
@@ -172,13 +202,14 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 		vt.stmtMu.Lock()
 		defer vt.stmtMu.Unlock()
 
-		vt.logger.Info("applying changeset", "slot", slot, "current_position", currentPosition)
+		vt.logger.Debug("applying changeset", "slot", slot, "current_position", currentPosition)
 
 		err := vt.conn.Exec("BEGIN", nil)
 		if err != nil {
 			return err
 		}
 		defer vt.conn.Exec("ROLLBACK", nil)
+
 		for _, change := range changeset {
 			if change.Schema == "public" {
 				change.Schema = "main"
@@ -187,7 +218,6 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 			switch change.Kind {
 			case "INSERT":
 				sql = fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)", change.Schema, change.Table, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
-				vt.logger.Info("execing insert", "sql", sql, "values", change.ColumnValues)
 				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
 			case "UPDATE":
 				setClause := make([]string, len(change.ColumnNames))
@@ -218,6 +248,18 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 				vt.logger.Error("failed to exec statement", "sql", sql, "error", err)
 				return fmt.Errorf("failed to exec %q: %w", sql, err)
 			}
+		}
+		err = vt.updatePositionStmt.Reset()
+		if err != nil {
+			vt.logger.Error("failed to reset position tracker statement", "slot", slot, "position", currentPosition, "error", err)
+			return err
+		}
+		vt.updatePositionStmt.BindText(1, slot)
+		vt.updatePositionStmt.BindText(2, currentPosition.String())
+		_, err = vt.updatePositionStmt.Step()
+		if err != nil {
+			vt.logger.Error("failed to update position tracker", "slot", slot, "position", currentPosition, "error", err)
+			return fmt.Errorf("updating position tracker: %w", err)
 		}
 		return vt.conn.Exec("COMMIT", nil)
 	}

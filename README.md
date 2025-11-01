@@ -32,8 +32,5 @@ SELECT pg_info();
 ### Subscribe
 
 ```sh
-# Create a virtual table using PG to configure the timeout and logger
-CREATE VIRTUAL TABLE temp.pg_repl USING pg(timeout=5000, logger='stdout');
-
-INSERT INTO temp.pg_repl(connect, slot, publication, plugin) VALUES('postgres://replication_user:changeit@127.0.0.1:5432/postgres?replication=database', 'my_slot', 'my_publication', 'pgoutput');
+INSERT INTO temp.pg(connect, slot, publication, plugin) VALUES('postgres://replication_user:secret@127.0.0.1:5432/postgres?replication=database', 'my_slot', 'my_publication', 'pgoutput');
 ```

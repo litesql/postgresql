@@ -114,7 +114,6 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 				logger.Warn("Stopping replication handler", "slot", cfg.SlotName)
 				return
 			default:
-				logger.Info("waiting for replication message", "slot", cfg.SlotName)
 				if time.Now().After(nextStandbyMessageDeadline) {
 					err = pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{WALWritePosition: currentPosition})
 					if err != nil {

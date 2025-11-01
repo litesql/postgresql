@@ -35,9 +35,6 @@ func pgOutputAdapter(fn HandleChanges) handler {
 		}
 		switch v := msg.(type) {
 		case pgoutput.Relation:
-			//TODO create SQL to create table if not exists
-			// TODO retomar o getTypes
-
 			set.Add(v)
 			return nil
 		case pgoutput.Insert:

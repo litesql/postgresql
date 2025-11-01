@@ -53,7 +53,15 @@ func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare fu
 	}
 
 	if positionTrackerTable == "" {
-		positionTrackerTable = "_postgresql"
+		positionTrackerTable = "pg_stat"
+	}
+
+	err = conn.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s(
+	    slot TEXT PRIMARY KEY,
+		position TEXT
+	)`, positionTrackerTable), nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating %q table: %w", positionTrackerTable, err)
 	}
 
 	vtab, err := NewReplicationVirtualTable(virtualTableName, conn, timeout, positionTrackerTable, logger)

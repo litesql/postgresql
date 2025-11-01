@@ -1,3 +1,5 @@
+CREATE USER replication_user WITH REPLICATION PASSWORD 'secret';
+
 CREATE TABLE users(
     ID serial PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
