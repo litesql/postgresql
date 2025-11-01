@@ -1,0 +1,9 @@
+CREATE TABLE users(
+    ID serial PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE    
+);
+
+ALTER TABLE users REPLICA IDENTITY FULL;
+
+CREATE PUBLICATION my_publication FOR TABLE users;

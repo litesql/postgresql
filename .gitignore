@@ -1,0 +1,5 @@
+*.so
+ha-sync.h
+
+# Added by goreleaser init:
+dist/
