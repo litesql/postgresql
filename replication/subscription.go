@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -23,6 +24,7 @@ type Change struct {
 		KeyNames  []string `json:"keynames,omitempty"`
 		KeyValues []any    `json:"keyvalues,omitempty"`
 	} `json:"oldkeys"`
+	SQL string `json:"sql"`
 }
 
 type HandleChanges func(changeset []Change, currentPosition pglogrepl.LSN) error
@@ -40,29 +42,36 @@ type Subscription struct {
 	cfg             Config
 	handleFn        HandleChanges
 	lastError       error
+	useNamespace    bool
 	currentPosition pglogrepl.LSN
 	changes         []Change
 	relations       map[uint32]*pglogrepl.RelationMessageV2
 	quit            chan struct{}
 }
 
-func Subscribe(cfg Config, handler HandleChanges) (*Subscription, error) {
+func Subscribe(cfg Config, handler HandleChanges, useNamespace bool) (*Subscription, error) {
 	if cfg.SlotName == "" {
 		return nil, fmt.Errorf("slotName is required")
 	}
 	if cfg.PublicationName == "" {
 		return nil, fmt.Errorf("publicationName is required")
 	}
-	cfg.pluginArgs = []string{`"proto_version" '1', "publication_names" '` + cfg.PublicationName + `'`}
+	cfg.pluginArgs = []string{
+		"proto_version '2'",
+		fmt.Sprintf("publication_names '%s'", cfg.PublicationName),
+		"messages 'true'",
+		"streaming 'true'",
+	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 10 * time.Second
 	}
 	return &Subscription{
-		cfg:       cfg,
-		handleFn:  handler,
-		changes:   make([]Change, 0),
-		relations: make(map[uint32]*pglogrepl.RelationMessageV2),
-		quit:      make(chan struct{}),
+		cfg:          cfg,
+		handleFn:     handler,
+		useNamespace: useNamespace,
+		changes:      make([]Change, 0),
+		relations:    make(map[uint32]*pglogrepl.RelationMessageV2),
+		quit:         make(chan struct{}),
 	}, nil
 }
 
@@ -205,11 +214,16 @@ func (s *Subscription) process(walStart pglogrepl.LSN, walData []byte, serverTim
 	}
 	switch logicalMsg := logicalMsg.(type) {
 	case *pglogrepl.RelationMessageV2:
+		if _, ok := s.relations[logicalMsg.RelationID]; !ok {
+			change, err := s.decodeRelationChange(logicalMsg, typeMap)
+			if err != nil {
+				return err
+			}
+			s.changes = append(s.changes, change)
+		}
 		s.relations[logicalMsg.RelationID] = logicalMsg
-
 	case *pglogrepl.BeginMessage:
 		s.changes = make([]Change, 0)
-
 	case *pglogrepl.CommitMessage:
 		if s.handleFn != nil {
 			s.currentPosition = walStart + pglogrepl.LSN(len(walData))
@@ -254,6 +268,41 @@ func (s *Subscription) process(walStart pglogrepl.LSN, walData []byte, serverTim
 		logger.Warn("Unknown message type in pgoutput stream", "type", typ)
 	}
 	return nil
+}
+
+func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, typeMap *pgtype.Map) (Change, error) {
+	colNameAndType := make([]string, 0)
+	for _, col := range rel.Columns {
+		sqliteType := "TEXT"
+		pgType, ok := typeMap.TypeForOID(col.DataType)
+		if ok {
+			switch pgType.Name {
+			case "bytea", "varbit":
+				sqliteType = "BLOB"
+			case "numeric", "float4", "float8":
+				sqliteType = "REAL"
+			case "int2", "int4", "int8":
+				sqliteType = "INTEGER"
+			case "json", "jsonb":
+				sqliteType = "JSONB"
+			}
+			colNameAndType = append(colNameAndType, fmt.Sprintf("%s %s", col.Name, sqliteType))
+		}
+	}
+	c := Change{
+		Schema: rel.Namespace,
+		Table:  rel.RelationName,
+		Kind:   "SQL",
+	}
+	tableName := c.Table
+	if s.useNamespace {
+		if c.Schema == "public" {
+			c.Schema = "main"
+		}
+		tableName = fmt.Sprintf("%s.%s", c.Schema, c.Table)
+	}
+	c.SQL = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s(%s)", tableName, strings.Join(colNameAndType, ", "))
+	return c, nil
 }
 
 func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleData, oldTuple *pglogrepl.TupleData) (Change, error) {

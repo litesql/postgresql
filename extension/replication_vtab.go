@@ -109,7 +109,7 @@ func (vt *ReplicationVirtualTable) Insert(values ...sqlite.Value) (int64, error)
 		return 0, fmt.Errorf("already using the %q slot", slot)
 	}
 
-	subscription, err := replication.Subscribe(cfg, vt.handler(slot))
+	subscription, err := replication.Subscribe(cfg, vt.handler(slot), vt.useNamespace)
 	if err != nil {
 		return 0, err
 	}
@@ -230,6 +230,8 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 				}
 				sql = fmt.Sprintf("DELETE FROM %s WHERE %s", tableName, strings.Join(whereClause, " AND "))
 				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
+			case "SQL":
+				err = vt.conn.Exec(change.SQL, nil)
 			default:
 				continue
 			}
