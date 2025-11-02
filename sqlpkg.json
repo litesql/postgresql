@@ -1,12 +1,12 @@
 {
     "owner": "litesql",
     "name": "postgresql",
-    "version": "v0.0.1",
+    "version": "v0.0.3",
     "repository": "https://github.com/litesql/postgresql",
     "authors": ["Walter Wanderley"],
     "license": "MIT",
     "description": "SQLite extension to replicate data from PostgreSQL",
-    "symbols": ["postgresql"],
+    "symbols": ["pg", "pg_stat", "pg_system", "pg_create_slot", "pg_drop_slot"],
     "assets": {
         "files": {
             "darwin-amd64": "postgresql_{version}_Darwin_x86_64.tar.gz",

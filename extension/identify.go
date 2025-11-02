@@ -13,7 +13,7 @@ func (m *Identify) Args() int {
 }
 
 func (m *Identify) Deterministic() bool {
-	return true
+	return false
 }
 
 func (m *Identify) Apply(ctx *sqlite.Context, values ...sqlite.Value) {

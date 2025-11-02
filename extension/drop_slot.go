@@ -13,7 +13,7 @@ func (m *DropSlot) Args() int {
 }
 
 func (m *DropSlot) Deterministic() bool {
-	return true
+	return false
 }
 
 func (m *DropSlot) Apply(ctx *sqlite.Context, values ...sqlite.Value) {

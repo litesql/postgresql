@@ -94,11 +94,6 @@ func (vt *ReplicationVirtualTable) Insert(values ...sqlite.Value) (int64, error)
 		publication = values[2].Text()
 	}
 
-	plugin := "pgoutput"
-	if len(values) > 3 && values[3].Text() != "" {
-		plugin = values[3].Text()
-	}
-
 	cfg := replication.Config{
 		DSN:             dsn,
 		SlotName:        slot,
@@ -112,23 +107,9 @@ func (vt *ReplicationVirtualTable) Insert(values ...sqlite.Value) (int64, error)
 		return 0, fmt.Errorf("already using the %q slot", slot)
 	}
 
-	var (
-		subscription *replication.Subscription
-		err          error
-	)
-	switch plugin {
-	case "", "pgoutput":
-		subscription, err = replication.NewPgOutput(cfg, vt.handler(slot))
-		if err != nil {
-			return 0, err
-		}
-	case "wal2json":
-		subscription, err = replication.NewWal2Json(cfg, vt.handler(slot))
-		if err != nil {
-			return 0, err
-		}
-	default:
-		return 0, fmt.Errorf("unsupported plugin: %q", plugin)
+	subscription, err := replication.Subscribe(cfg, vt.handler(slot))
+	if err != nil {
+		return 0, err
 	}
 	err = subscription.Start(context.Background(), vt.logger, vt.loader(slot))
 	if err != nil {
@@ -309,15 +290,13 @@ func (c *subscriptionsCursor) Column(ctx *sqlite.VirtualTableContext, i int) err
 	case 0:
 		ctx.ResultText(c.current.DSN())
 	case 1:
-		ctx.ResultText(c.current.SlotName())
+		if lastError := c.current.LastError(); lastError != nil {
+			ctx.ResultText(fmt.Sprintf("%s (%s)", c.current.SlotName(), lastError.Error()))
+		} else {
+			ctx.ResultText(c.current.SlotName())
+		}
 	case 2:
 		ctx.ResultText(c.current.PublicationName())
-	case 3:
-		if lastError := c.current.LastError(); lastError != nil {
-			ctx.ResultText(fmt.Sprintf("%s (%s)", c.current.DecodePlugin(), lastError.Error()))
-		} else {
-			ctx.ResultText(c.current.DecodePlugin())
-		}
 	}
 	return nil
 }

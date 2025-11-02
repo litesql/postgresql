@@ -20,7 +20,6 @@ type Config struct {
 	PublicationName string
 	SlotName        string
 	Timeout         time.Duration
-	decodePlugin    string
 	pluginArgs      []string
 }
 
@@ -31,19 +30,20 @@ type Subscription struct {
 	quit      chan struct{}
 }
 
-func newSubscription(cfg Config, handle handler) (*Subscription, error) {
+func Subscribe(cfg Config, handler HandleChanges) (*Subscription, error) {
 	if cfg.SlotName == "" {
 		return nil, fmt.Errorf("slotName is required")
 	}
-	if cfg.decodePlugin == "" {
-		return nil, fmt.Errorf("plugin is required")
+	if cfg.PublicationName == "" {
+		return nil, fmt.Errorf("publicationName is required")
 	}
+	cfg.pluginArgs = []string{`"proto_version" '1', "publication_names" '` + cfg.PublicationName + `'`}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 10 * time.Second
 	}
 	return &Subscription{
 		cfg:    cfg,
-		handle: handle,
+		handle: pgOutputAdapter(handler),
 		quit:   make(chan struct{}),
 	}, nil
 }
@@ -54,10 +54,6 @@ func (s *Subscription) SlotName() string {
 
 func (s *Subscription) PublicationName() string {
 	return s.cfg.PublicationName
-}
-
-func (s *Subscription) DecodePlugin() string {
-	return s.cfg.decodePlugin
 }
 
 func (s *Subscription) DSN() string {
@@ -86,15 +82,6 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 		logger.Info("Loaded previous position", "position", currentPosition)
 	}
 
-	_, err = pglogrepl.CreateReplicationSlot(ctx, conn, cfg.SlotName, cfg.decodePlugin,
-		pglogrepl.CreateReplicationSlotOptions{
-			Temporary: false,
-			Mode:      pglogrepl.LogicalReplication,
-		})
-	if err != nil {
-		return fmt.Errorf("CreateReplicationSlot failed: %w", err)
-	}
-
 	err = pglogrepl.StartReplication(ctx, conn, cfg.SlotName, currentPosition,
 		pglogrepl.StartReplicationOptions{
 			PluginArgs: cfg.pluginArgs,
@@ -114,12 +101,6 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 			select {
 			case <-s.quit:
 				logger.Warn("Stopping replication handler", "slot", cfg.SlotName)
-				err := pglogrepl.DropReplicationSlot(ctx, conn, cfg.SlotName, pglogrepl.DropReplicationSlotOptions{
-					Wait: true,
-				})
-				if err != nil {
-					logger.Error("DropReplicationSlot failed", "error", err)
-				}
 				return
 			default:
 				if time.Now().After(nextStandbyMessageDeadline) {
@@ -191,18 +172,4 @@ func (s *Subscription) Stop() {
 
 func (s *Subscription) LastError() error {
 	return s.lastError
-}
-
-func NewPgOutput(cfg Config, h HandleChanges) (*Subscription, error) {
-	if cfg.PublicationName == "" {
-		return nil, fmt.Errorf("publicationName is required")
-	}
-	cfg.decodePlugin = "pgoutput"
-	cfg.pluginArgs = []string{`"proto_version" '1', "publication_names" '` + cfg.PublicationName + `'`}
-	return newSubscription(cfg, pgOutputAdapter(h))
-}
-
-func NewWal2Json(cfg Config, h HandleChanges) (*Subscription, error) {
-	cfg.decodePlugin = "wal2json"
-	return newSubscription(cfg, wal2JsonAdapter(h))
 }

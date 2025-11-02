@@ -22,6 +22,23 @@ func Identify(dsn string) string {
 	return fmt.Sprintf(`{"systemid": "%s", "timeline": %d, "xlogpos": "%s", "dbname": "%s"}`, sysident.SystemID, sysident.Timeline, sysident.XLogPos, sysident.DBName)
 }
 
+func CreateSlot(dsn, slot string) string {
+	conn, err := pgconn.Connect(context.Background(), dsn)
+	if err != nil {
+		return fmt.Sprintf(`{"error": %s}`, err.Error())
+	}
+	defer conn.Close(context.Background())
+
+	res, err := pglogrepl.CreateReplicationSlot(context.Background(), conn, slot, "pgoutput", pglogrepl.CreateReplicationSlotOptions{
+		Temporary: false,
+		Mode:      pglogrepl.LogicalReplication,
+	})
+	if err != nil {
+		return fmt.Sprintf(`{"error": %s}`, err.Error())
+	}
+	return fmt.Sprintf(`{"slot": "%s", "plugin": "%s", "snapshot": "%s", "consistentPoint": "%s"}`, res.SlotName, res.OutputPlugin, res.SnapshotName, res.ConsistentPoint)
+}
+
 func DropSlot(dsn, slot string) string {
 	conn, err := pgconn.Connect(context.Background(), dsn)
 	if err != nil {

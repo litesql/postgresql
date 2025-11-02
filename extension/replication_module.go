@@ -68,7 +68,7 @@ func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare fu
 	if err != nil {
 		return nil, err
 	}
-	return vtab, declare("CREATE TABLE x(connect TEXT, slot TEXT, publication TEXT, plugin TEXT)")
+	return vtab, declare("CREATE TABLE x(connect TEXT, slot TEXT, publication TEXT)")
 }
 
 func sanitizeOptionValue(v string) string {

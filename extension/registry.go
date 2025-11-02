@@ -10,6 +10,9 @@ func registerFunc(api *sqlite.ExtensionApi) (sqlite.ErrorCode, error) {
 	if err := api.CreateModule(config.DefaultReplicationVTabName, &ReplicationModule{}, sqlite.ReadOnly(false)); err != nil {
 		return sqlite.SQLITE_ERROR, err
 	}
+	if err := api.CreateFunction("pg_create_slot", &CreateSlot{}); err != nil {
+		return sqlite.SQLITE_ERROR, err
+	}
 	if err := api.CreateFunction("pg_drop_slot", &DropSlot{}); err != nil {
 		return sqlite.SQLITE_ERROR, err
 	}

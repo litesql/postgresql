@@ -1,7 +1,6 @@
 package replication
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -116,25 +115,4 @@ func decode(relation uint32, row []pgoutput.Tuple, oldRow []pgoutput.Tuple) (Cha
 		}
 	}
 	return c, nil
-}
-
-func wal2JsonAdapter(fn HandleChanges) handler {
-	return func(xld pglogrepl.XLogData) error {
-		var changes struct {
-			Data []Change `json:"change"`
-		}
-		err := json.Unmarshal(xld.WALData, &changes)
-		if err != nil {
-			return fmt.Errorf("error unmarshal handleWal2Json message: %w", err)
-		}
-		for i, c := range changes.Data {
-			c.ServerTime = xld.ServerTime
-			changes.Data[i] = c
-		}
-		if fn != nil {
-			currentPosition := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
-			return fn(changes.Data, currentPosition)
-		}
-		return nil
-	}
 }
