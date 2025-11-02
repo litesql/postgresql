@@ -20,26 +20,27 @@ type Config struct {
 	PublicationName string
 	SlotName        string
 	Timeout         time.Duration
+	decodePlugin    string
+	pluginArgs      []string
 }
 
 type Subscription struct {
-	cfg       config
+	cfg       Config
 	handle    handler
 	lastError error
 	quit      chan struct{}
 }
 
-func newSubscription(cfg config, handle handler) (*Subscription, error) {
+func newSubscription(cfg Config, handle handler) (*Subscription, error) {
 	if cfg.SlotName == "" {
 		return nil, fmt.Errorf("slotName is required")
 	}
-	if cfg.DecodePlugin == "" {
+	if cfg.decodePlugin == "" {
 		return nil, fmt.Errorf("plugin is required")
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 10 * time.Second
 	}
-
 	return &Subscription{
 		cfg:    cfg,
 		handle: handle,
@@ -56,7 +57,7 @@ func (s *Subscription) PublicationName() string {
 }
 
 func (s *Subscription) DecodePlugin() string {
-	return s.cfg.DecodePlugin
+	return s.cfg.decodePlugin
 }
 
 func (s *Subscription) DSN() string {
@@ -71,30 +72,32 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 		return fmt.Errorf("failed to connect to PostgreSQL server: %w", err)
 	}
 
-	sysident, err := pglogrepl.IdentifySystem(ctx, conn)
+	currentPosition, err := loadCheckpoint()
 	if err != nil {
-		conn.Close(ctx)
-		return fmt.Errorf("IdentifySystem failed: %w", err)
+		logger.Error("failed to load previous position", "error", err)
+		sysident, err := pglogrepl.IdentifySystem(ctx, conn)
+		if err != nil {
+			conn.Close(ctx)
+			return fmt.Errorf("IdentifySystem failed: %w", err)
+		}
+		currentPosition = sysident.XLogPos
+		logger.Info("Starting replication from current system position", "position", currentPosition)
+	} else {
+		logger.Info("Loaded previous position", "position", currentPosition)
 	}
 
-	_, err = pglogrepl.CreateReplicationSlot(ctx, conn, cfg.SlotName, cfg.DecodePlugin,
+	_, err = pglogrepl.CreateReplicationSlot(ctx, conn, cfg.SlotName, cfg.decodePlugin,
 		pglogrepl.CreateReplicationSlotOptions{
 			Temporary: false,
 			Mode:      pglogrepl.LogicalReplication,
 		})
 	if err != nil {
-		sysident.XLogPos, err = loadCheckpoint()
-		if err != nil {
-			logger.Error("failed to load previous position", "error", err)
-		}
-		logger.Info("Started replication", "slot", cfg.SlotName, "position", sysident.XLogPos)
-	} else {
-		logger.Info("Created replication", "slot", cfg.SlotName)
+		return fmt.Errorf("CreateReplicationSlot failed: %w", err)
 	}
 
-	err = pglogrepl.StartReplication(ctx, conn, cfg.SlotName, sysident.XLogPos,
+	err = pglogrepl.StartReplication(ctx, conn, cfg.SlotName, currentPosition,
 		pglogrepl.StartReplicationOptions{
-			PluginArgs: cfg.PluginArgs,
+			PluginArgs: cfg.pluginArgs,
 		})
 	if err != nil {
 		conn.Close(ctx)
@@ -102,7 +105,6 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 	}
 	logger.Info("Logical replication started", "slot", cfg.SlotName)
 
-	currentPosition := sysident.XLogPos
 	standbyMessageTimeout := cfg.Timeout
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
@@ -112,6 +114,12 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 			select {
 			case <-s.quit:
 				logger.Warn("Stopping replication handler", "slot", cfg.SlotName)
+				err := pglogrepl.DropReplicationSlot(ctx, conn, cfg.SlotName, pglogrepl.DropReplicationSlotOptions{
+					Wait: true,
+				})
+				if err != nil {
+					logger.Error("DropReplicationSlot failed", "error", err)
+				}
 				return
 			default:
 				if time.Now().After(nextStandbyMessageDeadline) {
@@ -189,31 +197,12 @@ func NewPgOutput(cfg Config, h HandleChanges) (*Subscription, error) {
 	if cfg.PublicationName == "" {
 		return nil, fmt.Errorf("publicationName is required")
 	}
-	return newSubscription(config{
-		DSN:             cfg.DSN,
-		SlotName:        cfg.SlotName,
-		PublicationName: cfg.PublicationName,
-		DecodePlugin:    "pgoutput",
-		PluginArgs:      []string{`"proto_version" '1', "publication_names" '` + cfg.PublicationName + `'`},
-		Timeout:         cfg.Timeout,
-	}, pgOutputAdapter(h))
+	cfg.decodePlugin = "pgoutput"
+	cfg.pluginArgs = []string{`"proto_version" '1', "publication_names" '` + cfg.PublicationName + `'`}
+	return newSubscription(cfg, pgOutputAdapter(h))
 }
 
 func NewWal2Json(cfg Config, h HandleChanges) (*Subscription, error) {
-	return newSubscription(config{
-		DSN:             cfg.DSN,
-		SlotName:        cfg.SlotName,
-		PublicationName: cfg.PublicationName,
-		DecodePlugin:    "wal2json",
-		Timeout:         cfg.Timeout,
-	}, wal2JsonAdapter(h))
-}
-
-type config struct {
-	DSN             string
-	SlotName        string
-	PublicationName string
-	DecodePlugin    string
-	PluginArgs      []string
-	Timeout         time.Duration
+	cfg.decodePlugin = "wal2json"
+	return newSubscription(cfg, wal2JsonAdapter(h))
 }
