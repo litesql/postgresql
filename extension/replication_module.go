@@ -22,6 +22,7 @@ func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare fu
 	}
 
 	var (
+		useNamespace         bool
 		positionTrackerTable string
 		timeout              time.Duration
 
@@ -38,6 +39,12 @@ func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare fu
 			v = sanitizeOptionValue(v)
 
 			switch strings.ToLower(k) {
+			case config.UseNamespace:
+				b, err := strconv.ParseBool(v)
+				if err != nil {
+					return nil, fmt.Errorf("invalid %q option: %w", k, err)
+				}
+				useNamespace = b
 			case config.PositionTrackerTable:
 				positionTrackerTable = v
 			case config.Timeout:
@@ -58,13 +65,14 @@ func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare fu
 
 	err = conn.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s(
 	    slot TEXT PRIMARY KEY,
-		position TEXT
+		position TEXT,
+		server_time TEXT
 	)`, positionTrackerTable), nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating %q table: %w", positionTrackerTable, err)
 	}
 
-	vtab, err := NewReplicationVirtualTable(virtualTableName, conn, timeout, positionTrackerTable, logger)
+	vtab, err := NewReplicationVirtualTable(virtualTableName, conn, timeout, positionTrackerTable, useNamespace, logger)
 	if err != nil {
 		return nil, err
 	}

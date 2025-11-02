@@ -22,6 +22,7 @@ type ReplicationVirtualTable struct {
 	conn               *sqlite.Conn
 	timeout            time.Duration
 	subscriptions      []*replication.Subscription
+	useNamespace       bool
 	stmtMu             sync.Mutex
 	loadPositionStmt   *sqlite.Stmt
 	updatePositionStmt *sqlite.Stmt
@@ -30,7 +31,7 @@ type ReplicationVirtualTable struct {
 	loggerCloser       io.Closer
 }
 
-func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, timeout time.Duration, positionTrackerTable string, loggerDef string) (*ReplicationVirtualTable, error) {
+func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, timeout time.Duration, positionTrackerTable string, useNamespace bool, loggerDef string) (*ReplicationVirtualTable, error) {
 	logger, loggerCloser, err := loggerFromConfig(loggerDef)
 	if err != nil {
 		return nil, err
@@ -39,7 +40,7 @@ func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, time
 	if err != nil {
 		return nil, fmt.Errorf("preparing position loader statement: %w", err)
 	}
-	updateStmt, _, err := conn.Prepare("REPLACE INTO " + positionTrackerTable + "(slot, position) VALUES(?, ?)")
+	updateStmt, _, err := conn.Prepare("REPLACE INTO " + positionTrackerTable + "(slot, position, server_time) VALUES(?, ?, ?)")
 	if err != nil {
 		return nil, fmt.Errorf("preparing position tracker statement: %w", err)
 	}
@@ -48,6 +49,7 @@ func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, time
 		virtualTableName:   virtualTableName,
 		conn:               conn,
 		timeout:            timeout,
+		useNamespace:       useNamespace,
 		loadPositionStmt:   loadStmt,
 		updatePositionStmt: updateStmt,
 		logger:             logger,
@@ -185,20 +187,26 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 
 		vt.logger.Debug("applying changeset", "slot", slot, "current_position", currentPosition)
 
-		err := vt.conn.Exec("BEGIN", nil)
+		err := vt.conn.Exec("BEGIN IMMEDIATE", nil)
 		if err != nil {
 			return err
 		}
 		defer vt.conn.Exec("ROLLBACK", nil)
 
+		var serverTime time.Time
 		for _, change := range changeset {
-			if change.Schema == "public" {
-				change.Schema = "main"
+			serverTime = change.ServerTime
+			tableName := change.Table
+			if vt.useNamespace {
+				if change.Schema == "public" {
+					change.Schema = "main"
+				}
+				tableName = fmt.Sprintf("%s.%s", change.Schema, change.Table)
 			}
 			var sql string
 			switch change.Kind {
 			case "INSERT":
-				sql = fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)", change.Schema, change.Table, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
+				sql = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
 				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
 			case "UPDATE":
 				setClause := make([]string, len(change.ColumnNames))
@@ -212,7 +220,7 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 				for i, col := range change.OldKeys.KeyNames {
 					whereClause[i] = fmt.Sprintf("%s = ?", col)
 				}
-				sql = fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s", change.Schema, change.Table, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
+				sql = fmt.Sprintf("UPDATE %s SET %s WHERE %s", tableName, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
 				args := append(change.ColumnValues, change.OldKeys.KeyValues...)
 				err = vt.conn.Exec(sql, nil, args...)
 			case "DELETE":
@@ -220,7 +228,7 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 				for i, col := range change.ColumnNames {
 					whereClause[i] = fmt.Sprintf("%s = ?", col)
 				}
-				sql = fmt.Sprintf("DELETE FROM %s.%s WHERE %s", change.Schema, change.Table, strings.Join(whereClause, " AND "))
+				sql = fmt.Sprintf("DELETE FROM %s WHERE %s", tableName, strings.Join(whereClause, " AND "))
 				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
 			default:
 				continue
@@ -237,6 +245,8 @@ func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChange
 		}
 		vt.updatePositionStmt.BindText(1, slot)
 		vt.updatePositionStmt.BindText(2, currentPosition.String())
+		vt.updatePositionStmt.BindText(3, serverTime.Format(time.RFC3339))
+
 		_, err = vt.updatePositionStmt.Step()
 		if err != nil {
 			vt.logger.Error("failed to update position tracker", "slot", slot, "position", currentPosition, "error", err)
