@@ -260,20 +260,59 @@ func (s *Subscription) process(walStart pglogrepl.LSN, walData []byte, serverTim
 		change.ServerTime = serverTime
 		s.changes = append(s.changes, change)
 	case *pglogrepl.TruncateMessageV2:
+		changes, err := s.decodeTruncateChanges(logicalMsg, serverTime)
+		if err != nil {
+			return err
+		}
+		s.changes = append(s.changes, changes...)
 	case *pglogrepl.TypeMessageV2:
 	case *pglogrepl.OriginMessage:
 	case *pglogrepl.LogicalDecodingMessageV2:
 	case *pglogrepl.StreamStartMessageV2:
+		s.changes = make([]Change, 0)
 		*inStream = true
 	case *pglogrepl.StreamStopMessageV2:
+		s.changes = make([]Change, 0)
 		*inStream = false
 	case *pglogrepl.StreamCommitMessageV2:
+		if s.handleFn != nil {
+			s.currentPosition = walStart + pglogrepl.LSN(len(walData))
+			return s.handleFn(s.changes, s.currentPosition)
+		}
 	case *pglogrepl.StreamAbortMessageV2:
+		s.changes = make([]Change, 0)
 	default:
 		typ := fmt.Sprintf("%T", logicalMsg)
 		logger.Warn("Unknown message type in pgoutput stream", "type", typ)
 	}
 	return nil
+}
+
+func (s *Subscription) decodeTruncateChanges(msg *pglogrepl.TruncateMessageV2, serverTime time.Time) ([]Change, error) {
+	changes := make([]Change, 0)
+	for _, relationID := range msg.RelationIDs {
+		rel, ok := s.relations[relationID]
+		if !ok {
+			return nil, fmt.Errorf("unknown relation ID %d", relationID)
+		}
+		c := Change{
+			Schema:     rel.Namespace,
+			Table:      rel.RelationName,
+			Kind:       "SQL",
+			ServerTime: serverTime,
+		}
+		tableName := c.Table
+		if s.useNamespace {
+			if c.Schema == "public" {
+				c.Schema = "main"
+			}
+			tableName = fmt.Sprintf("%s.%s", c.Schema, c.Table)
+		}
+		c.SQL = fmt.Sprintf("DELETE FROM %s", tableName)
+		changes = append(changes, c)
+	}
+
+	return changes, nil
 }
 
 func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, typeMap *pgtype.Map) (Change, error) {
@@ -371,6 +410,9 @@ func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleDat
 			}
 			c.ColumnNames = append(c.ColumnNames, colName)
 			c.ColumnValues = append(c.ColumnValues, val)
+		case 'b': //bytes
+			c.ColumnNames = append(c.ColumnNames, colName)
+			c.ColumnValues = append(c.ColumnValues, col.Data)
 		}
 	}
 
@@ -390,6 +432,9 @@ func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleDat
 				}
 				c.OldKeys.KeyNames = append(c.OldKeys.KeyNames, colName)
 				c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, val)
+			case 'b': //bytes
+				c.OldKeys.KeyNames = append(c.OldKeys.KeyNames, colName)
+				c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, col.Data)
 			}
 		}
 	}

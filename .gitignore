@@ -1,5 +1,6 @@
 *.so
 ha-sync.h
+*.db
 
 # Added by goreleaser init:
 dist/

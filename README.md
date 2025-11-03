@@ -17,7 +17,44 @@ go build -ldflags="-s -w" -buildmode=c-shared -o postgresql.so
 
 ## Basic usage
 
-### Loading the extension
+### Prepare PostgreSQL
+
+#### 1. Modify postgresql.conf:
+
+- Set wal_level = logical.
+- Adjust max_replication_slots and max_wal_senders according to the number of subscribers and replication slots needed.
+
+#### 2. Modify pg_hba.conf:
+
+Add an entry to allow the replication user to connect from the subscriber's IP address. For example:
+
+```
+host    replication     rep_user        subscriber_ip/32        md5
+```
+
+#### 3. Create a Replication User:
+
+- Create a user with replication privileges:
+
+```sql
+CREATE ROLE rep_user WITH REPLICATION LOGIN PASSWORD 'secret';
+```
+
+#### 4. Create a Publication:
+
+- Define which tables or all tables in a database should be replicated:
+
+```sql
+CREATE PUBLICATION my_publication FOR TABLE table1, table2;
+-- or for all tables in the current database:
+CREATE PUBLICATION my_publication FOR ALL TABLES;
+```
+
+#### 5. Restart PostgreSQL.
+
+### Prepare SQLite 
+
+#### 1. Loading the extension
 
 ```sh
 sqlite3
@@ -29,12 +66,27 @@ sqlite3
 SELECT pg_info();
 ```
 
-### Subscribe
+2. #### Start replication to sqlite
+
+- Create a slot (if necessary)
 
 ```sql
-SELECT pg_create_slot('postgres://replication_user:secret@127.0.0.1:5432/postgres', 'my_slot');
+SELECT pg_create_slot('postgres://rep_user:secret@127.0.0.1:5432/postgres', 'my_slot');
 ```
 
+- Insert data into pg_sub virtual table to start replication.
+
 ```sql
-INSERT INTO temp.pg_sub(connect, slot, publication) VALUES('postgres://replication_user:secret@127.0.0.1:5432/postgres', 'my_slot', 'my_publication');
+INSERT INTO temp.pg_sub(connect, slot, publication) VALUES('postgres://rep_user:secret@127.0.0.1:5432/postgres', 'my_slot', 'my_publication');
 ```
+
+## Configuring
+
+You can configure replication by passing parameters to the VIRTUAL TABLE.
+
+| Param | Description | Default |
+|-------|-------------|---------|
+| use_namespace | Keep schema/namespace (otherwise always use main database) | false |
+| position_tracker_table | Table to store replication position checkpoints | pg_pub_stat |
+| timeout | Timeout in milliseconds | 10000 |
+| logger | Log errors to "stdout, stderr or file:/path/to/log.txt" | |
