@@ -6,6 +6,6 @@ const (
 	Timeout              = "timeout"                // timeout in milliseconds
 	Logger               = "logger"                 // Log errors to "stdout, stderr or file:/path/to/log.txt"
 
-	DefaultReplicationVTabName  = "pg"
-	DefaultPositionTrackerTable = "_pg"
+	DefaultSubscriptionVTabName   = "pg_sub"
+	DefaultPositionTrackerTabName = "pg_sub_stat"
 )

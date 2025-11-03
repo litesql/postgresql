@@ -12,13 +12,13 @@ import (
 	"github.com/litesql/postgresql/config"
 )
 
-type ReplicationModule struct {
+type SubscriptionModule struct {
 }
 
-func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare func(string) error) (sqlite.VirtualTable, error) {
+func (m *SubscriptionModule) Connect(conn *sqlite.Conn, args []string, declare func(string) error) (sqlite.VirtualTable, error) {
 	virtualTableName := args[2]
 	if virtualTableName == "" {
-		virtualTableName = config.DefaultReplicationVTabName
+		virtualTableName = config.DefaultSubscriptionVTabName
 	}
 
 	var (
@@ -60,7 +60,7 @@ func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare fu
 	}
 
 	if positionTrackerTable == "" {
-		positionTrackerTable = "pg_stat"
+		positionTrackerTable = config.DefaultPositionTrackerTabName
 	}
 
 	err = conn.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s(
@@ -72,7 +72,7 @@ func (m *ReplicationModule) Connect(conn *sqlite.Conn, args []string, declare fu
 		return nil, fmt.Errorf("creating %q table: %w", positionTrackerTable, err)
 	}
 
-	vtab, err := NewReplicationVirtualTable(virtualTableName, conn, timeout, positionTrackerTable, useNamespace, logger)
+	vtab, err := NewSubscriptionVirtualTable(virtualTableName, conn, timeout, positionTrackerTable, useNamespace, logger)
 	if err != nil {
 		return nil, err
 	}

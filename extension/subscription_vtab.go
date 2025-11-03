@@ -17,7 +17,7 @@ import (
 	"github.com/walterwanderley/sqlite"
 )
 
-type ReplicationVirtualTable struct {
+type SubscriptionVirtualTable struct {
 	virtualTableName   string
 	conn               *sqlite.Conn
 	timeout            time.Duration
@@ -31,7 +31,7 @@ type ReplicationVirtualTable struct {
 	loggerCloser       io.Closer
 }
 
-func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, timeout time.Duration, positionTrackerTable string, useNamespace bool, loggerDef string) (*ReplicationVirtualTable, error) {
+func NewSubscriptionVirtualTable(virtualTableName string, conn *sqlite.Conn, timeout time.Duration, positionTrackerTable string, useNamespace bool, loggerDef string) (*SubscriptionVirtualTable, error) {
 	logger, loggerCloser, err := loggerFromConfig(loggerDef)
 	if err != nil {
 		return nil, err
@@ -45,7 +45,7 @@ func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, time
 		return nil, fmt.Errorf("preparing position tracker statement: %w", err)
 	}
 
-	return &ReplicationVirtualTable{
+	return &SubscriptionVirtualTable{
 		virtualTableName:   virtualTableName,
 		conn:               conn,
 		timeout:            timeout,
@@ -58,15 +58,15 @@ func NewReplicationVirtualTable(virtualTableName string, conn *sqlite.Conn, time
 	}, nil
 }
 
-func (vt *ReplicationVirtualTable) BestIndex(in *sqlite.IndexInfoInput) (*sqlite.IndexInfoOutput, error) {
+func (vt *SubscriptionVirtualTable) BestIndex(in *sqlite.IndexInfoInput) (*sqlite.IndexInfoOutput, error) {
 	return &sqlite.IndexInfoOutput{EstimatedCost: 1000000}, nil
 }
 
-func (vt *ReplicationVirtualTable) Open() (sqlite.VirtualCursor, error) {
+func (vt *SubscriptionVirtualTable) Open() (sqlite.VirtualCursor, error) {
 	return newSubscriptionsCursor(vt.subscriptions), nil
 }
 
-func (vt *ReplicationVirtualTable) Disconnect() error {
+func (vt *SubscriptionVirtualTable) Disconnect() error {
 	var err error
 	if vt.loggerCloser != nil {
 		err = vt.loggerCloser.Close()
@@ -78,11 +78,11 @@ func (vt *ReplicationVirtualTable) Disconnect() error {
 	return err
 }
 
-func (vt *ReplicationVirtualTable) Destroy() error {
+func (vt *SubscriptionVirtualTable) Destroy() error {
 	return nil
 }
 
-func (vt *ReplicationVirtualTable) Insert(values ...sqlite.Value) (int64, error) {
+func (vt *SubscriptionVirtualTable) Insert(values ...sqlite.Value) (int64, error) {
 	if len(values) < 1 || values[0].Text() == "" {
 		return 0, fmt.Errorf("dsn is required")
 	}
@@ -122,15 +122,15 @@ func (vt *ReplicationVirtualTable) Insert(values ...sqlite.Value) (int64, error)
 	return 1, nil
 }
 
-func (vt *ReplicationVirtualTable) Update(_ sqlite.Value, _ ...sqlite.Value) error {
+func (vt *SubscriptionVirtualTable) Update(_ sqlite.Value, _ ...sqlite.Value) error {
 	return fmt.Errorf("UPDATE operations on %q are not supported", vt.virtualTableName)
 }
 
-func (vt *ReplicationVirtualTable) Replace(old sqlite.Value, new sqlite.Value, _ ...sqlite.Value) error {
+func (vt *SubscriptionVirtualTable) Replace(old sqlite.Value, new sqlite.Value, _ ...sqlite.Value) error {
 	return fmt.Errorf("REPLACE operations on %q are not supported", vt.virtualTableName)
 }
 
-func (vt *ReplicationVirtualTable) Delete(v sqlite.Value) error {
+func (vt *SubscriptionVirtualTable) Delete(v sqlite.Value) error {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
 	index := v.Int()
@@ -146,7 +146,7 @@ func (vt *ReplicationVirtualTable) Delete(v sqlite.Value) error {
 	return nil
 }
 
-func (vt *ReplicationVirtualTable) contains(slot string) bool {
+func (vt *SubscriptionVirtualTable) contains(slot string) bool {
 	for _, rh := range vt.subscriptions {
 		if rh.SlotName() == slot {
 			return true
@@ -155,7 +155,7 @@ func (vt *ReplicationVirtualTable) contains(slot string) bool {
 	return false
 }
 
-func (vt *ReplicationVirtualTable) loader(slot string) replication.CheckpointLoader {
+func (vt *SubscriptionVirtualTable) loader(slot string) replication.CheckpointLoader {
 	return func() (pglogrepl.LSN, error) {
 		err := vt.loadPositionStmt.Reset()
 		if err != nil {
@@ -180,7 +180,7 @@ func (vt *ReplicationVirtualTable) loader(slot string) replication.CheckpointLoa
 	}
 }
 
-func (vt *ReplicationVirtualTable) handler(slot string) replication.HandleChanges {
+func (vt *SubscriptionVirtualTable) handler(slot string) replication.HandleChanges {
 	return func(changeset []replication.Change, currentPosition pglogrepl.LSN) error {
 		vt.stmtMu.Lock()
 		defer vt.stmtMu.Unlock()

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -92,7 +93,12 @@ var typeMap = pgtype.NewMap()
 func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheckpoint CheckpointLoader) error {
 	cfg := s.cfg
 
-	conn, err := pgconn.Connect(ctx, cfg.DSN)
+	pgConfig, err := pgconn.ParseConfig(cfg.DSN)
+	if err != nil {
+		return fmt.Errorf("failed to parse PostgreSQL conection config: %w", err)
+	}
+	pgConfig.RuntimeParams["replication"] = "database"
+	conn, err := pgconn.ConnectConfig(ctx, pgConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect to PostgreSQL server: %w", err)
 	}
@@ -289,6 +295,42 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 			colNameAndType = append(colNameAndType, fmt.Sprintf("%s %s", col.Name, sqliteType))
 		}
 	}
+	cfg, err := pgx.ParseConfig(s.cfg.DSN)
+	if err != nil {
+		return Change{}, fmt.Errorf("failed to parse PostgreSQL dsn: %w", err)
+	}
+	delete(cfg.RuntimeParams, "replication")
+	conn, err := pgx.ConnectConfig(context.Background(), cfg)
+	if err != nil {
+		return Change{}, fmt.Errorf("failed to connect to PostgreSQL server: %w", err)
+	}
+	defer conn.Close(context.Background())
+
+	rows, err := conn.Query(context.Background(),
+		`SELECT c.column_name
+			FROM information_schema.table_constraints tc 
+			JOIN information_schema.constraint_column_usage AS ccu USING (constraint_schema, constraint_name) 
+			JOIN information_schema.columns AS c ON c.table_schema = tc.constraint_schema
+  			AND tc.table_name = c.table_name AND ccu.column_name = c.column_name
+			WHERE constraint_type = 'PRIMARY KEY' and tc.constraint_schema = $1 and tc.table_name = $2`, rel.Namespace, rel.RelationName)
+	if err != nil {
+		return Change{}, fmt.Errorf("failed to query %q pk columns: %w", rel.RelationName, err)
+	}
+	defer rows.Close()
+
+	pk := make([]string, 0)
+	for rows.Next() {
+		var col string
+		err := rows.Scan(&col)
+		if err != nil {
+			return Change{}, fmt.Errorf("failed to scan %q pk columns: %w", rel.RelationName, err)
+		}
+		pk = append(pk, col)
+	}
+	if len(pk) > 0 {
+		colNameAndType = append(colNameAndType, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pk, ", ")))
+	}
+
 	c := Change{
 		Schema: rel.Namespace,
 		Table:  rel.RelationName,

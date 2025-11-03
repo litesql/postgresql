@@ -32,9 +32,9 @@ SELECT pg_info();
 ### Subscribe
 
 ```sql
-SELECT pg_create_slot('postgres://replication_user:secret@127.0.0.1:5432/postgres?replication=database', 'my_slot');
+SELECT pg_create_slot('postgres://replication_user:secret@127.0.0.1:5432/postgres', 'my_slot');
 ```
 
 ```sql
-INSERT INTO temp.pg(connect, slot, publication) VALUES('postgres://replication_user:secret@127.0.0.1:5432/postgres?replication=database', 'my_slot', 'my_publication');
+INSERT INTO temp.pg_sub(connect, slot, publication) VALUES('postgres://replication_user:secret@127.0.0.1:5432/postgres', 'my_slot', 'my_publication');
 ```
