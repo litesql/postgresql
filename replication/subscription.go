@@ -307,12 +307,12 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 	defer conn.Close(context.Background())
 
 	rows, err := conn.Query(context.Background(),
-		`SELECT c.column_name
-			FROM information_schema.table_constraints tc 
-			JOIN information_schema.constraint_column_usage AS ccu USING (constraint_schema, constraint_name) 
-			JOIN information_schema.columns AS c ON c.table_schema = tc.constraint_schema
-  			AND tc.table_name = c.table_name AND ccu.column_name = c.column_name
-			WHERE constraint_type = 'PRIMARY KEY' and tc.constraint_schema = $1 and tc.table_name = $2`, rel.Namespace, rel.RelationName)
+		`SELECT a.attname
+			FROM pg_index i
+			JOIN pg_attribute a ON a.attrelid = i.indrelid
+            AND a.attnum = ANY(i.indkey)
+			WHERE i.indrelid = $1::regclass
+			AND i.indisprimary;`, fmt.Sprintf("%s.%s", rel.Namespace, rel.RelationName))
 	if err != nil {
 		return Change{}, fmt.Errorf("failed to query %q pk columns: %w", rel.RelationName, err)
 	}
@@ -328,7 +328,7 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 		pk = append(pk, col)
 	}
 	if len(pk) > 0 {
-		colNameAndType = append(colNameAndType, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pk, ", ")))
+		colNameAndType = append(colNameAndType, fmt.Sprintf("PRIMARY KEY(%s)", strings.Join(pk, ", ")))
 	}
 
 	c := Change{
