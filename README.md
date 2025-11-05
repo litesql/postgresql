@@ -52,12 +52,22 @@ CREATE PUBLICATION my_publication FOR ALL TABLES;
 
 #### 5. Restart PostgreSQL.
 
-### Prepare SQLite 
+### Prepare SQLite
 
-#### 1. Loading the extension
+#### 1. Convert PostgreSQL databse to SQLite
 
 ```sh
-sqlite3
+go install github.com/litesql/postgresql/cmd/pg2sqlite@latest
+```
+
+```
+pg2sqlite [postgresql_url] example.db
+```
+
+#### 2. Loading the extension
+
+```sh
+sqlite3 example.db
 
 # Load the extension
 .load ./postgresql
@@ -66,7 +76,7 @@ sqlite3
 SELECT pg_info();
 ```
 
-2. #### Start replication to sqlite
+#### 3. Start replication to sqlite
 
 - Create a slot (if necessary)
 

@@ -2,7 +2,6 @@ package extension
 
 import (
 	"cmp"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -68,17 +67,18 @@ func (vt *SubscriptionVirtualTable) Open() (sqlite.VirtualCursor, error) {
 
 func (vt *SubscriptionVirtualTable) Disconnect() error {
 	var err error
-	if vt.loggerCloser != nil {
-		err = vt.loggerCloser.Close()
-	}
 	for _, subscription := range vt.subscriptions {
 		subscription.Stop()
 	}
 	err = errors.Join(err, vt.loadPositionStmt.Finalize(), vt.updatePositionStmt.Finalize())
+	if vt.loggerCloser != nil {
+		err = errors.Join(err, vt.loggerCloser.Close())
+	}
 	return err
 }
 
 func (vt *SubscriptionVirtualTable) Destroy() error {
+	slog.Info("Destroy()")
 	return nil
 }
 
@@ -113,7 +113,7 @@ func (vt *SubscriptionVirtualTable) Insert(values ...sqlite.Value) (int64, error
 	if err != nil {
 		return 0, err
 	}
-	err = subscription.Start(context.Background(), vt.logger, vt.loader(slot))
+	err = subscription.Start(vt.logger, vt.loader(slot), false)
 	if err != nil {
 		return 0, err
 	}

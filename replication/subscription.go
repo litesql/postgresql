@@ -90,39 +90,53 @@ func (s *Subscription) DSN() string {
 
 var typeMap = pgtype.NewMap()
 
-func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheckpoint CheckpointLoader) error {
+func (s *Subscription) Start(logger *slog.Logger, loadCheckpoint CheckpointLoader, retry bool) error {
 	cfg := s.cfg
-
 	pgConfig, err := pgconn.ParseConfig(cfg.DSN)
 	if err != nil {
+		s.lastError = err
 		return fmt.Errorf("failed to parse PostgreSQL conection config: %w", err)
 	}
 	pgConfig.RuntimeParams["replication"] = "database"
-	conn, err := pgconn.ConnectConfig(ctx, pgConfig)
+	conn, err := pgconn.ConnectConfig(context.Background(), pgConfig)
 	if err != nil {
+		if retry {
+			s.lastError = err
+			time.Sleep(s.cfg.Timeout)
+			return s.Start(logger, loadCheckpoint, true)
+		}
 		return fmt.Errorf("failed to connect to PostgreSQL server: %w", err)
 	}
-
 	s.currentPosition, err = loadCheckpoint()
 	if err != nil {
 		logger.Error("failed to load previous position", "error", err)
-		sysident, err := pglogrepl.IdentifySystem(ctx, conn)
+		sysident, err := pglogrepl.IdentifySystem(context.Background(), conn)
 		if err != nil {
-			conn.Close(ctx)
+			conn.Close(context.Background())
+			if retry {
+				s.lastError = err
+				time.Sleep(s.cfg.Timeout)
+				return s.Start(logger, loadCheckpoint, true)
+			}
 			return fmt.Errorf("IdentifySystem failed: %w", err)
 		}
 		s.currentPosition = sysident.XLogPos
-		logger.Info("Starting replication from current system position", "position", s.currentPosition)
-	} else {
-		logger.Info("Loaded previous position", "position", s.currentPosition)
 	}
 
-	err = pglogrepl.StartReplication(ctx, conn, cfg.SlotName, s.currentPosition,
+	logger.Info("Starting replication", "position", s.currentPosition)
+
+	err = pglogrepl.StartReplication(context.Background(), conn, cfg.SlotName, s.currentPosition,
 		pglogrepl.StartReplicationOptions{
 			PluginArgs: cfg.pluginArgs,
 		})
 	if err != nil {
-		conn.Close(ctx)
+		conn.Close(context.Background())
+		if retry {
+			logger.Error("failed to start replication", "error", err)
+			s.lastError = err
+			time.Sleep(s.cfg.Timeout)
+			return s.Start(logger, loadCheckpoint, true)
+		}
 		return fmt.Errorf("startReplication failed: %w", err)
 	}
 	logger.Info("Logical replication started", "slot", cfg.SlotName)
@@ -131,7 +145,7 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 
 	inStream := false
 	go func() {
-		defer conn.Close(ctx)
+		defer conn.Close(context.Background())
 		for {
 			select {
 			case <-s.quit:
@@ -139,16 +153,19 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 				return
 			default:
 				if time.Now().After(nextStandbyMessageDeadline) {
-					err = pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{WALWritePosition: s.currentPosition})
+					err = pglogrepl.SendStandbyStatusUpdate(context.Background(), conn, pglogrepl.StandbyStatusUpdate{WALWritePosition: s.currentPosition})
 					if err != nil {
 						logger.Error("sendStandbyStatusUpdate failed", "error", err)
 						s.lastError = fmt.Errorf("sendStandbyStatusUpdate failed: %w", err)
+						conn.Close(context.Background())
+						go s.Start(logger, loadCheckpoint, true)
 						return
 					}
 					nextStandbyMessageDeadline = time.Now().Add(standbyMessageTimeout)
+					s.lastError = nil
 				}
 
-				ctx, cancel := context.WithDeadline(ctx, nextStandbyMessageDeadline)
+				ctx, cancel := context.WithDeadline(context.Background(), nextStandbyMessageDeadline)
 				msg, err := conn.ReceiveMessage(ctx)
 				cancel()
 				if err != nil {
@@ -157,6 +174,8 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 					}
 					logger.Error("receiveMessage failed", "error", err)
 					s.lastError = fmt.Errorf("receiveMessage failed: %w", err)
+					conn.Close(context.Background())
+					go s.Start(logger, loadCheckpoint, true)
 					return
 				}
 
@@ -168,6 +187,8 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 						if err != nil {
 							logger.Error("ParsePrimaryKeepaliveMessage failed", "error", err)
 							s.lastError = fmt.Errorf("ParsePrimaryKeepaliveMessage failed: %w", err)
+							conn.Close(context.Background())
+							go s.Start(logger, loadCheckpoint, true)
 							return
 						}
 
@@ -179,21 +200,26 @@ func (s *Subscription) Start(ctx context.Context, logger *slog.Logger, loadCheck
 						if err != nil {
 							logger.Error("parseXLogData failed", "error", err)
 							s.lastError = fmt.Errorf("parseXLogData failed: %w", err)
+							conn.Close(context.Background())
+							go s.Start(logger, loadCheckpoint, true)
 							return
 						}
 						err = s.process(xld.WALStart, xld.WALData, xld.ServerTime, typeMap, &inStream, logger)
 						if err != nil {
 							logger.Error("handle failed", "error", err)
 							s.lastError = fmt.Errorf("handle failed: %w", err)
-							return
+						} else {
+							s.lastError = nil
+							s.currentPosition = xld.WALStart + pglogrepl.LSN(len(xld.WALData))
 						}
-						s.currentPosition = xld.WALStart + pglogrepl.LSN(len(xld.WALData))
 					default:
 						logger.Warn("received unexpected CopyData message", "byteID", msg.Data[0])
 					}
 				case *pgproto3.ErrorResponse:
 					logger.Error("received Postgres WAL error:" + msg.Message)
 					s.lastError = fmt.Errorf("received Postgres WAL error: %v", msg.Message)
+					conn.Close(context.Background())
+					go s.Start(logger, loadCheckpoint, true)
 					return
 				default:
 					typ := fmt.Sprintf("%T", msg)

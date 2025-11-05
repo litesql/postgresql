@@ -66,6 +66,15 @@ builds:
       - CGO_ENABLED=1
       - CC=o64-clang
 
+  - id: pg2sqlite
+    main: ./cmd/pg2sqlite
+    ldflags: -s -w
+    env:
+      - CGO_ENABLED=0
+    goarch:
+      - amd64
+      - arm64
+
 archives:
   - id: postgresql
     formats: [tar.gz]
@@ -86,6 +95,24 @@ archives:
     files:
       - none*
 
+  - id: pg2sqlite
+    formats: [tar.gz]
+    ids: [pg2sqlite]
+    # this name template makes the OS and Arch compatible with the results of `uname`.
+    name_template: >-
+      postgresql_v
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    # use zip for windows archives
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - none*
 changelog:
   disable: true
 
