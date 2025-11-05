@@ -67,6 +67,7 @@ builds:
       - CC=o64-clang
 
   - id: pg2sqlite
+    binary: pg2sqlite
     main: ./cmd/pg2sqlite
     ldflags: -s -w
     env:
