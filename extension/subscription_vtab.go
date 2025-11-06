@@ -78,7 +78,6 @@ func (vt *SubscriptionVirtualTable) Disconnect() error {
 }
 
 func (vt *SubscriptionVirtualTable) Destroy() error {
-	slog.Info("Destroy()")
 	return nil
 }
 
