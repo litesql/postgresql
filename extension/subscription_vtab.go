@@ -206,7 +206,7 @@ func (vt *SubscriptionVirtualTable) handler(slot string) replication.HandleChang
 			var sql string
 			switch change.Kind {
 			case "INSERT":
-				sql = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
+				sql = fmt.Sprintf("INSERT INTO [%s] (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
 				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
 			case "UPDATE":
 				setClause := make([]string, len(change.ColumnNames))
@@ -220,7 +220,7 @@ func (vt *SubscriptionVirtualTable) handler(slot string) replication.HandleChang
 				for i, col := range change.OldKeys.KeyNames {
 					whereClause[i] = fmt.Sprintf("%s = ?", col)
 				}
-				sql = fmt.Sprintf("UPDATE %s SET %s WHERE %s", tableName, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
+				sql = fmt.Sprintf("UPDATE [%s] SET %s WHERE %s", tableName, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
 				args := append(change.ColumnValues, change.OldKeys.KeyValues...)
 				err = vt.conn.Exec(sql, nil, args...)
 			case "DELETE":
@@ -228,7 +228,7 @@ func (vt *SubscriptionVirtualTable) handler(slot string) replication.HandleChang
 				for i, col := range change.ColumnNames {
 					whereClause[i] = fmt.Sprintf("%s = ?", col)
 				}
-				sql = fmt.Sprintf("DELETE FROM %s WHERE %s", tableName, strings.Join(whereClause, " AND "))
+				sql = fmt.Sprintf("DELETE FROM [%s] WHERE %s", tableName, strings.Join(whereClause, " AND "))
 				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
 			case "SQL":
 				err = vt.conn.Exec(change.SQL, nil)

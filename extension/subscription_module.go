@@ -63,11 +63,12 @@ func (m *SubscriptionModule) Connect(conn *sqlite.Conn, args []string, declare f
 		positionTrackerTable = config.DefaultPositionTrackerTabName
 	}
 
-	err = conn.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s(
-	    slot TEXT PRIMARY KEY,
-		position TEXT,
-		server_time TEXT
-	)`, positionTrackerTable), nil)
+	err = conn.Exec(fmt.Sprintf(
+		`CREATE TABLE IF NOT EXISTS %s(
+	slot TEXT PRIMARY KEY,
+	position TEXT,
+	server_time TEXT
+)`, positionTrackerTable), nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating %q table: %w", positionTrackerTable, err)
 	}

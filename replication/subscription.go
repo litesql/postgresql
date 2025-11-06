@@ -2,6 +2,7 @@ package replication
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -334,7 +335,7 @@ func (s *Subscription) decodeTruncateChanges(msg *pglogrepl.TruncateMessageV2, s
 			}
 			tableName = fmt.Sprintf("%s.%s", c.Schema, c.Table)
 		}
-		c.SQL = fmt.Sprintf("DELETE FROM %s", tableName)
+		c.SQL = fmt.Sprintf("DELETE FROM [%s]", tableName)
 		changes = append(changes, c)
 	}
 
@@ -393,7 +394,7 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 		pk = append(pk, col)
 	}
 	if len(pk) > 0 {
-		colNameAndType = append(colNameAndType, fmt.Sprintf("PRIMARY KEY(%s)", strings.Join(pk, ", ")))
+		colNameAndType = append(colNameAndType, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pk, ", ")))
 	}
 
 	c := Change{
@@ -408,7 +409,7 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 		}
 		tableName = fmt.Sprintf("%s.%s", c.Schema, c.Table)
 	}
-	c.SQL = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s(%s)", tableName, strings.Join(colNameAndType, ", "))
+	c.SQL = fmt.Sprintf("CREATE TABLE IF NOT EXISTS [%s](\n\t%s\n)", tableName, strings.Join(colNameAndType, ",\n\t"))
 	return c, nil
 }
 
@@ -435,7 +436,17 @@ func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleDat
 				return c, fmt.Errorf("error decoding column data: %w", err)
 			}
 			c.ColumnNames = append(c.ColumnNames, colName)
-			c.ColumnValues = append(c.ColumnValues, val)
+			switch v := val.(type) {
+			case map[string]any:
+				jsonData, err := json.Marshal(v)
+				if err != nil {
+					return c, err
+				}
+				c.ColumnValues = append(c.ColumnValues, string(jsonData))
+			default:
+				c.ColumnValues = append(c.ColumnValues, val)
+			}
+
 		case 'b': //bytes
 			c.ColumnNames = append(c.ColumnNames, colName)
 			c.ColumnValues = append(c.ColumnValues, col.Data)
@@ -457,7 +468,16 @@ func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleDat
 					return c, fmt.Errorf("error decoding column data: %w", err)
 				}
 				c.OldKeys.KeyNames = append(c.OldKeys.KeyNames, colName)
-				c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, val)
+				switch v := val.(type) {
+				case map[string]any:
+					jsonData, err := json.Marshal(v)
+					if err != nil {
+						return c, err
+					}
+					c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, string(jsonData))
+				default:
+					c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, val)
+				}
 			case 'b': //bytes
 				c.OldKeys.KeyNames = append(c.OldKeys.KeyNames, colName)
 				c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, col.Data)
@@ -471,5 +491,6 @@ func decodeTextColumnData(mi *pgtype.Map, data []byte, dataType uint32) (any, er
 	if dt, ok := mi.TypeForOID(dataType); ok {
 		return dt.Codec.DecodeValue(mi, dataType, pgtype.TextFormatCode, data)
 	}
+
 	return string(data), nil
 }

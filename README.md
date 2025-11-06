@@ -54,7 +54,7 @@ CREATE PUBLICATION my_publication FOR ALL TABLES;
 
 ### Prepare SQLite
 
-#### 1. Convert PostgreSQL databse to SQLite
+#### 1. Convert PostgreSQL databse to SQLite (optional)
 
 ```sh
 go install github.com/litesql/postgresql/cmd/pg2sqlite@latest
@@ -87,7 +87,7 @@ SELECT pg_create_slot('postgres://rep_user:secret@127.0.0.1:5432/postgres', 'my_
 - Insert data into pg_sub virtual table to start replication.
 
 ```sql
-INSERT INTO temp.pg_sub(connect, slot, publication) VALUES('postgres://rep_user:secret@127.0.0.1:5432/postgres', 'my_slot', 'my_publication');
+INSERT INTO pg_sub(connect, slot, publication) VALUES('postgres://rep_user:secret@127.0.0.1:5432/postgres', 'my_slot', 'my_publication');
 ```
 
 ## Configuring
@@ -97,6 +97,6 @@ You can configure replication by passing parameters to the VIRTUAL TABLE.
 | Param | Description | Default |
 |-------|-------------|---------|
 | use_namespace | Keep schema/namespace (otherwise always use main database) | false |
-| position_tracker_table | Table to store replication position checkpoints | pg_pub_stat |
+| position_tracker_table | Table to store replication position checkpoints | pg_sub_stat |
 | timeout | Timeout in milliseconds | 10000 |
 | logger | Log errors to "stdout, stderr or file:/path/to/log.txt" | |

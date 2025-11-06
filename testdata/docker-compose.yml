@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:${POSTGRES_VERSION:-17}-alpine
+    image: postgres:${POSTGRES_VERSION:-18}-alpine
     ports:
       - "5432:5432"
     restart: always
