@@ -1,7 +1,7 @@
 {
     "owner": "litesql",
     "name": "postgresql",
-    "version": "v0.0.9",
+    "version": "v0.0.10",
     "repository": "https://github.com/litesql/postgresql",
     "authors": ["Walter Wanderley"],
     "license": "MIT",
