@@ -343,13 +343,17 @@ func copyData(conn *pgx.Conn, st schemaTable, db *sql.DB) error {
 			return err
 		}
 		for i, v := range values {
-			switch v.(type) {
+			switch v := v.(type) {
 			case map[string]any:
 				jsonData, err := json.Marshal(v)
 				if err != nil {
 					return err
 				}
 				values[i] = string(jsonData)
+			case [16]uint8:
+				// UUID type
+				uuidBytes := v
+				values[i] = fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16])
 			}
 		}
 		_, err = txStmt.Exec(values...)

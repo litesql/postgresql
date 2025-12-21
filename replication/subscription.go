@@ -443,6 +443,10 @@ func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleDat
 					return c, err
 				}
 				c.ColumnValues = append(c.ColumnValues, string(jsonData))
+			case [16]uint8:
+				// UUID type
+				uuidBytes := v
+				c.ColumnValues = append(c.ColumnValues, fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16]))
 			default:
 				c.ColumnValues = append(c.ColumnValues, val)
 			}
@@ -475,6 +479,10 @@ func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleDat
 						return c, err
 					}
 					c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, string(jsonData))
+				case [16]uint8:
+					// UUID type
+					uuidBytes := v
+					c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16]))
 				default:
 					c.OldKeys.KeyValues = append(c.OldKeys.KeyValues, val)
 				}
