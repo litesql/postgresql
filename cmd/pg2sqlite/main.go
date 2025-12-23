@@ -154,7 +154,7 @@ func tables(conn *pgx.Conn, publication string) ([]schemaTable, error) {
 
 func createTable(conn *pgx.Conn, st schemaTable, db *sql.DB) error {
 	rows, err := conn.Query(context.Background(),
-		`SELECT column_name, data_type, is_nullable
+		`SELECT column_name, udt_name, is_nullable
 		FROM information_schema.columns
 		WHERE table_schema = $1 AND table_name = $2`, st.schema, st.table)
 	if err != nil {
@@ -163,13 +163,13 @@ func createTable(conn *pgx.Conn, st schemaTable, db *sql.DB) error {
 
 	var def []string
 	for rows.Next() {
-		var name, typ, nullable string
-		err := rows.Scan(&name, &typ, &nullable)
+		var name, nullable, udtName string
+		err := rows.Scan(&name, &udtName, &nullable)
 		if err != nil {
 			return err
 		}
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("%s %s", name, sqliteType(typ)))
+		sb.WriteString(fmt.Sprintf("%s %s", name, sqliteType(udtName)))
 		if nullable == "NO" {
 			sb.WriteString(" NOT NULL")
 		}
@@ -468,16 +468,19 @@ func foreignKeys(conn *pgx.Conn, st schemaTable) ([]foreignKey, error) {
 	return fks, nil
 }
 
-func sqliteType(pgType string) string {
-	switch pgType {
-	case "bytea":
+func sqliteType(udtName string) string {
+	udtName = strings.TrimPrefix(udtName, "_")
+	switch udtName {
+	case "bytea", "geometry":
 		return "BLOB"
-	case "smallint", "int", "integer", "bigint", "smallserial", "serial":
+	case "int2", "int4", "int8":
 		return "INTEGER"
-	case "real", "float4", "double precision", "float8", "numeric", "decimal", "money":
+	case "numeric", "float4", "float8", "money":
 		return "REAL"
 	case "json", "jsonb":
 		return "JSONB"
+	case "timestampz":
+		return "DATETIME"
 	default:
 		return "TEXT"
 	}
