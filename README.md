@@ -117,6 +117,7 @@ SELECT pg_undo(
   '5m',
   '' 
 );
+```
 
 The fourth parameter filters which entities to revert. You can filter by table name or by table name with a specific column value.
 
