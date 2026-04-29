@@ -2,6 +2,7 @@ package extension
 
 import (
 	"cmp"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,15 +17,29 @@ import (
 	"github.com/walterwanderley/sqlite"
 )
 
+type ReplicationType int
+
+const (
+	ReplicationTypeBoth ReplicationType = iota
+	ReplicationTypeDataOnly
+	ReplicationTypeHistoryOnly
+)
+
+type subscriptionItem struct {
+	*replication.Subscription
+	replicationType ReplicationType
+}
+
 type SubscriptionVirtualTable struct {
 	virtualTableName   string
 	conn               *sqlite.Conn
 	timeout            time.Duration
-	subscriptions      []*replication.Subscription
+	subscriptions      []*subscriptionItem
 	useNamespace       bool
 	stmtMu             sync.Mutex
 	loadPositionStmt   *sqlite.Stmt
 	updatePositionStmt *sqlite.Stmt
+	historyStmt        *sqlite.Stmt
 	mu                 sync.Mutex
 	logger             *slog.Logger
 	loggerCloser       io.Closer
@@ -43,6 +58,10 @@ func NewSubscriptionVirtualTable(virtualTableName string, conn *sqlite.Conn, tim
 	if err != nil {
 		return nil, fmt.Errorf("preparing position tracker statement: %w", err)
 	}
+	historyStmt, _, err := conn.Prepare("INSERT INTO pg_history(slot, position, server_time, changeset) VALUES(?, ?, ?, ?)")
+	if err != nil {
+		return nil, fmt.Errorf("preparing history statement: %w", err)
+	}
 
 	return &SubscriptionVirtualTable{
 		virtualTableName:   virtualTableName,
@@ -51,9 +70,10 @@ func NewSubscriptionVirtualTable(virtualTableName string, conn *sqlite.Conn, tim
 		useNamespace:       useNamespace,
 		loadPositionStmt:   loadStmt,
 		updatePositionStmt: updateStmt,
+		historyStmt:        historyStmt,
 		logger:             logger,
 		loggerCloser:       loggerCloser,
-		subscriptions:      make([]*replication.Subscription, 0),
+		subscriptions:      make([]*subscriptionItem, 0),
 	}, nil
 }
 
@@ -70,7 +90,7 @@ func (vt *SubscriptionVirtualTable) Disconnect() error {
 	for _, subscription := range vt.subscriptions {
 		subscription.Stop()
 	}
-	err = errors.Join(err, vt.loadPositionStmt.Finalize(), vt.updatePositionStmt.Finalize())
+	err = errors.Join(err, vt.loadPositionStmt.Finalize(), vt.updatePositionStmt.Finalize(), vt.historyStmt.Finalize())
 	if vt.loggerCloser != nil {
 		err = errors.Join(err, vt.loggerCloser.Close())
 	}
@@ -108,7 +128,14 @@ func (vt *SubscriptionVirtualTable) Insert(values ...sqlite.Value) (int64, error
 		return 0, fmt.Errorf("already using the %q slot", slot)
 	}
 
-	subscription, err := replication.Subscribe(cfg, vt.handler(slot), vt.useNamespace)
+	var replType ReplicationType
+	if len(values) > 3 && values[3].Type() == sqlite.SQLITE_INTEGER {
+		replType = ReplicationType(values[3].Int())
+		if replType < ReplicationTypeBoth || replType > ReplicationTypeHistoryOnly {
+			return 0, fmt.Errorf("invalid replication type %d. Both = 0, DataOnly = 1, HistoryOnly = 2", replType)
+		}
+	}
+	subscription, err := replication.Subscribe(cfg, vt.handler(slot, replType), vt.useNamespace)
 	if err != nil {
 		return 0, err
 	}
@@ -116,7 +143,10 @@ func (vt *SubscriptionVirtualTable) Insert(values ...sqlite.Value) (int64, error
 	if err != nil {
 		return 0, err
 	}
-	vt.subscriptions = append(vt.subscriptions, subscription)
+	vt.subscriptions = append(vt.subscriptions, &subscriptionItem{
+		Subscription:    subscription,
+		replicationType: replType,
+	})
 
 	return 1, nil
 }
@@ -179,7 +209,7 @@ func (vt *SubscriptionVirtualTable) loader(slot string) replication.CheckpointLo
 	}
 }
 
-func (vt *SubscriptionVirtualTable) handler(slot string) replication.HandleChanges {
+func (vt *SubscriptionVirtualTable) handler(slot string, replType ReplicationType) replication.HandleChanges {
 	return func(changeset []replication.Change, currentPosition pglogrepl.LSN) error {
 		vt.stmtMu.Lock()
 		defer vt.stmtMu.Unlock()
@@ -193,50 +223,64 @@ func (vt *SubscriptionVirtualTable) handler(slot string) replication.HandleChang
 		defer vt.conn.Exec("ROLLBACK", nil)
 
 		var serverTime time.Time
-		for _, change := range changeset {
-			serverTime = change.ServerTime
-			tableName := change.Table
-			if vt.useNamespace {
-				if change.Schema == "public" {
-					change.Schema = "main"
+		if replType == ReplicationTypeBoth || replType == ReplicationTypeDataOnly {
+			for _, change := range changeset {
+				serverTime = change.ServerTime
+				tableName := change.Table
+				if vt.useNamespace {
+					if change.Schema == "public" {
+						change.Schema = "main"
+					}
+					tableName = fmt.Sprintf("%s.%s", change.Schema, change.Table)
 				}
-				tableName = fmt.Sprintf("%s.%s", change.Schema, change.Table)
-			}
-			var sql string
-			switch change.Kind {
-			case "INSERT":
-				sql = fmt.Sprintf("INSERT INTO [%s] (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
-				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
-			case "UPDATE":
-				setClause := make([]string, len(change.ColumnNames))
-				for i, col := range change.ColumnNames {
-					setClause[i] = fmt.Sprintf("%s = ?", col)
+				var sql string
+				switch change.Kind {
+				case "INSERT":
+					sql = fmt.Sprintf("INSERT INTO [%s] (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
+					err = vt.conn.Exec(sql, nil, change.ColumnValues...)
+				case "UPDATE":
+					setClause := make([]string, len(change.ColumnNames))
+					for i, col := range change.ColumnNames {
+						setClause[i] = fmt.Sprintf("%s = ?", col)
+					}
+					if len(change.OldKeys.KeyNames) == 0 {
+						return fmt.Errorf("missing old keys for update on table %s.%s", change.Schema, change.Table)
+					}
+					var args []any
+					args = append(args, change.ColumnValues...)
+					whereClause := make([]string, len(change.OldKeys.KeyNames))
+					for i, col := range change.OldKeys.KeyNames {
+						if change.OldKeys.KeyValues[i] == nil {
+							whereClause[i] = fmt.Sprintf("%s IS NULL", col)
+						} else {
+							args = append(args, change.OldKeys.KeyValues[i])
+							whereClause[i] = fmt.Sprintf("%s = ?", col)
+						}
+					}
+					sql = fmt.Sprintf("UPDATE [%s] SET %s WHERE %s", tableName, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
+					err = vt.conn.Exec(sql, nil, args...)
+				case "DELETE":
+					whereClause := make([]string, len(change.ColumnNames))
+					var args []any
+					for i, col := range change.ColumnNames {
+						if change.ColumnValues[i] == nil {
+							whereClause[i] = fmt.Sprintf("%s IS NULL", col)
+						} else {
+							args = append(args, change.ColumnValues[i])
+							whereClause[i] = fmt.Sprintf("%s = ?", col)
+						}
+					}
+					sql = fmt.Sprintf("DELETE FROM [%s] WHERE %s", tableName, strings.Join(whereClause, " AND "))
+					err = vt.conn.Exec(sql, nil, args...)
+				case "SQL":
+					err = vt.conn.Exec(change.SQL, nil)
+				default:
+					continue
 				}
-				if len(change.OldKeys.KeyNames) == 0 {
-					return fmt.Errorf("missing old keys for update on table %s.%s", change.Schema, change.Table)
+				if err != nil {
+					vt.logger.Error("failed to exec statement", "sql", sql, "error", err)
+					return fmt.Errorf("failed to exec %q: %w", sql, err)
 				}
-				whereClause := make([]string, len(change.OldKeys.KeyNames))
-				for i, col := range change.OldKeys.KeyNames {
-					whereClause[i] = fmt.Sprintf("%s = ?", col)
-				}
-				sql = fmt.Sprintf("UPDATE [%s] SET %s WHERE %s", tableName, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
-				args := append(change.ColumnValues, change.OldKeys.KeyValues...)
-				err = vt.conn.Exec(sql, nil, args...)
-			case "DELETE":
-				whereClause := make([]string, len(change.ColumnNames))
-				for i, col := range change.ColumnNames {
-					whereClause[i] = fmt.Sprintf("%s = ?", col)
-				}
-				sql = fmt.Sprintf("DELETE FROM [%s] WHERE %s", tableName, strings.Join(whereClause, " AND "))
-				err = vt.conn.Exec(sql, nil, change.ColumnValues...)
-			case "SQL":
-				err = vt.conn.Exec(change.SQL, nil)
-			default:
-				continue
-			}
-			if err != nil {
-				vt.logger.Error("failed to exec statement", "sql", sql, "error", err)
-				return fmt.Errorf("failed to exec %q: %w", sql, err)
 			}
 		}
 		err = vt.updatePositionStmt.Reset()
@@ -252,6 +296,29 @@ func (vt *SubscriptionVirtualTable) handler(slot string) replication.HandleChang
 		if err != nil {
 			vt.logger.Error("failed to update position tracker", "slot", slot, "position", currentPosition, "error", err)
 			return fmt.Errorf("updating position tracker: %w", err)
+		}
+
+		if replType == ReplicationTypeBoth || replType == ReplicationTypeHistoryOnly {
+			err = vt.historyStmt.Reset()
+			if err != nil {
+				vt.logger.Error("failed to reset history statement", "slot", slot, "position", currentPosition, "error", err)
+				return err
+			}
+			changesetJson, err := json.Marshal(changeset)
+			if err != nil {
+				vt.logger.Error("failed to marshal changeset for history record", "slot", slot, "position", currentPosition, "error", err)
+				return fmt.Errorf("marshaling changeset for history record: %w", err)
+			}
+			vt.historyStmt.BindText(1, slot)
+			vt.historyStmt.BindText(2, currentPosition.String())
+			vt.historyStmt.BindText(3, serverTime.Format(time.RFC3339))
+			vt.historyStmt.BindText(4, string(changesetJson))
+
+			_, err = vt.historyStmt.Step()
+			if err != nil {
+				vt.logger.Error("failed to insert history record", "slot", slot, "position", currentPosition, "error", err)
+				return fmt.Errorf("inserting history record: %w", err)
+			}
 		}
 		return vt.conn.Exec("COMMIT", nil)
 	}
@@ -269,13 +336,13 @@ func placeholders(n int) string {
 }
 
 type subscriptionsCursor struct {
-	data    []*replication.Subscription
-	current *replication.Subscription // current row that the cursor points to
-	rowid   int64                     // current rowid .. negative for EOF
+	data    []*subscriptionItem
+	current *subscriptionItem // current row that the cursor points to
+	rowid   int64             // current rowid .. negative for EOF
 }
 
-func newSubscriptionsCursor(data []*replication.Subscription) *subscriptionsCursor {
-	slices.SortFunc(data, func(a, b *replication.Subscription) int {
+func newSubscriptionsCursor(data []*subscriptionItem) *subscriptionsCursor {
+	slices.SortFunc(data, func(a, b *subscriptionItem) int {
 		return cmp.Compare(a.SlotName(), b.SlotName())
 	})
 	return &subscriptionsCursor{
@@ -308,6 +375,10 @@ func (c *subscriptionsCursor) Column(ctx *sqlite.VirtualTableContext, i int) err
 		}
 	case 2:
 		ctx.ResultText(c.current.PublicationName())
+	case 3:
+		ctx.ResultInt(int(c.current.replicationType))
+	default:
+		return fmt.Errorf("invalid column index %d", i)
 	}
 	return nil
 }

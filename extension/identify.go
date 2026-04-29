@@ -1,6 +1,8 @@
 package extension
 
 import (
+	"encoding/json"
+
 	"github.com/litesql/postgresql/replication"
 	"github.com/walterwanderley/sqlite"
 )
@@ -18,5 +20,15 @@ func (m *Identify) Deterministic() bool {
 
 func (m *Identify) Apply(ctx *sqlite.Context, values ...sqlite.Value) {
 	dsn := values[0].Text()
-	ctx.ResultText(replication.Identify(dsn))
+	info, err := replication.Identify(dsn)
+	if err != nil {
+		ctx.ResultError(err)
+		return
+	}
+	jsonInfo, err := json.Marshal(info)
+	if err != nil {
+		ctx.ResultError(err)
+		return
+	}
+	ctx.ResultText(string(jsonInfo))
 }

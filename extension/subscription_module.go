@@ -73,11 +73,24 @@ func (m *SubscriptionModule) Connect(conn *sqlite.Conn, args []string, declare f
 		return nil, fmt.Errorf("creating %q table: %w", positionTrackerTable, err)
 	}
 
+	historyTable := "pg_history"
+	err = conn.Exec(fmt.Sprintf(
+		`CREATE TABLE IF NOT EXISTS %s(
+	seq INTEGER PRIMARY KEY AUTOINCREMENT,
+	slot TEXT,
+	position TEXT,
+	server_time TEXT,
+	changeset JSONB
+)`, historyTable), nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating %q table: %w", positionTrackerTable, err)
+	}
+
 	vtab, err := NewSubscriptionVirtualTable(virtualTableName, conn, timeout, positionTrackerTable, useNamespace, logger)
 	if err != nil {
 		return nil, err
 	}
-	return vtab, declare("CREATE TABLE x(connect TEXT, slot TEXT, publication TEXT)")
+	return vtab, declare("CREATE TABLE x(connect TEXT, slot TEXT, publication TEXT, type INTEGER)")
 }
 
 func sanitizeOptionValue(v string) string {

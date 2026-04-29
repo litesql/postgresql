@@ -19,7 +19,11 @@ func loggerFromConfig(option string) (*slog.Logger, io.Closer, error) {
 	case "stderr":
 		w = os.Stderr
 	case "":
-		w = io.Discard
+		if os.Getenv("SQLITE_PG_LOG") == "1" {
+			w = os.Stderr
+		} else {
+			w = io.Discard
+		}
 	default:
 		if !strings.HasPrefix(option, "file:") {
 			return nil, nil, fmt.Errorf("invalid %q option, use stdout, stderr or file:filepath", config.Logger)

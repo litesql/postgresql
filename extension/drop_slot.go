@@ -19,5 +19,10 @@ func (m *DropSlot) Deterministic() bool {
 func (m *DropSlot) Apply(ctx *sqlite.Context, values ...sqlite.Value) {
 	dsn := values[0].Text()
 	slot := values[1].Text()
-	ctx.ResultText(replication.DropSlot(dsn, slot))
+	err := replication.DropSlot(dsn, slot)
+	if err != nil {
+		ctx.ResultError(err)
+		return
+	}
+	ctx.ResultText(`{"status": "slot dropped successfully"}`)
 }

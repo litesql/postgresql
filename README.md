@@ -2,101 +2,191 @@
 
 ## Installation
 
-Download **postgresql** extension from the [releases page](https://github.com/litesql/postgresql/releases).
-Here's a great article that explains [how to install the SQLite extension.](https://antonz.org/install-sqlite-extension/)
+Download the `postgresql` extension from the [releases page](https://github.com/litesql/postgresql/releases).
 
-### Compiling from source
-
-- [Go 1.24+](https://go.dev) and CGO_ENABLED=1 is required.
+If you want to build it yourself, install Go 1.25+ and enable CGO:
 
 ```sh
 go build -ldflags="-s -w" -buildmode=c-shared -o postgresql.so
 ```
 
-- Use .so extension for Linux, .dylib for MacOS and .dll for Windows
+Use:
+- `.so` on Linux
+- `.dylib` on macOS
+- `.dll` on Windows
 
 ## Basic usage
 
 ### Prepare PostgreSQL
 
-#### 1. Modify postgresql.conf:
+1. Edit `postgresql.conf`
+    - Set `wal_level = logical`
+    - Increase `max_replication_slots` and `max_wal_senders` as needed
 
-- Set wal_level = logical.
-- Adjust max_replication_slots and max_wal_senders according to the number of subscribers and replication slots needed.
+2. Edit `pg_hba.conf`
+    - Add a replication entry for the subscriber IP, for example:
 
-#### 2. Modify pg_hba.conf:
-
-Add an entry to allow the replication user to connect from the subscriber's IP address. For example:
-
-```
+```text
 host    replication     rep_user        subscriber_ip/32        md5
 ```
 
-#### 3. Create a Replication User:
-
-- Create a user with replication privileges:
+3. Create a replication user:
 
 ```sql
 CREATE ROLE rep_user WITH REPLICATION LOGIN PASSWORD 'secret';
 ```
 
-#### 4. Create a Publication:
-
-- Define which tables or all tables in a database should be replicated:
+4. Create a publication:
 
 ```sql
 CREATE PUBLICATION my_publication FOR TABLE table1, table2;
--- or for all tables in the current database:
+-- or for all tables
 CREATE PUBLICATION my_publication FOR ALL TABLES;
 ```
 
-#### 5. Restart PostgreSQL.
+5. Restart PostgreSQL.
 
 ### Prepare SQLite
 
-#### 1. Convert PostgreSQL databse to SQLite (optional)
+Optional: convert PostgreSQL schema and data to SQLite:
 
 ```sh
 go install github.com/litesql/postgresql/cmd/pg2sqlite@latest
-```
-
-```
 pg2sqlite [postgresql_url] example.db
 ```
 
-#### 2. Loading the extension
+Load the extension:
 
 ```sh
 sqlite3 example.db
-
-# Load the extension
 .load ./postgresql
-
-# check version (optional)
 SELECT pg_info();
 ```
 
-#### 3. Start replication to sqlite
+Start replication:
 
-- Create a slot (if necessary)
-
-```sql
-SELECT pg_create_slot('postgres://rep_user:secret@127.0.0.1:5432/postgres', 'my_slot');
-```
-
-- Insert data into pg_sub virtual table to start replication.
+1. Create a slot if needed:
 
 ```sql
-INSERT INTO pg_sub(connect, slot, publication) VALUES('postgres://rep_user:secret@127.0.0.1:5432/postgres', 'my_slot', 'my_publication');
+SELECT pg_create_slot(
+  'postgres://rep_user:secret@127.0.0.1:5432/postgres',
+  'my_slot'
+);
 ```
 
-## Configuring
+2. Start replication by inserting into `pg_sub`:
 
-You can configure replication by passing parameters to the VIRTUAL TABLE.
+```sql
+INSERT INTO pg_sub(connect, slot, publication)
+VALUES(
+  'postgres://rep_user:secret@127.0.0.1:5432/postgres',
+  'my_slot',
+  'my_publication'
+);
+```
 
-| Param | Description | Default |
-|-------|-------------|---------|
-| use_namespace | Keep schema/namespace (otherwise always use main database) | false |
-| position_tracker_table | Table to store replication position checkpoints | pg_sub_stat |
-| timeout | Timeout in milliseconds | 10000 |
-| logger | Log errors to "stdout, stderr or file:/path/to/log.txt" | |
+### Revert PostgreSQL Committed Transactions
+
+The extension stores changes in `pg_history`. Undo completed PostgreSQL transactions in reverse order.
+
+**Syntax:**
+
+```
+pg_undo(<dsn>, <slot>, <startSeq>, <filter>)
+```
+
+**Example:**
+
+```sql
+SELECT pg_undo(
+  'postgres://postgres:secret@localhost:5432/postgres',
+  'my_slot',
+  0,
+  ''
+);
+```
+
+`startSeq` is the sequence number in `pg_history`. Use `0` to revert the most recent transaction only.
+
+You can also specify a time duration to undo transactions from that point up to now:
+
+```sql
+SELECT pg_undo(
+  'postgres://postgres:secret@localhost:5432/postgres',
+  'my_slot',
+  '5m',
+  '' 
+);
+
+The fourth parameter filters which entities to revert. You can filter by table name or by table name with a specific column value.
+
+**Syntax:**
+```
+tableName[.column=value]
+```
+
+**Examples:**
+
+1. Revert all changes from the past 5 minutes on the `users` table:
+
+```sql
+SELECT pg_undo(
+    'postgres://postgres:secret@localhost:5432/postgres',
+    'my_slot',
+    '5m',
+    'users' 
+);
+```
+
+2. Revert all changes from the past 5 minutes on the `users` table where `id=42`:
+
+```sql
+SELECT pg_undo(
+    'postgres://postgres:secret@localhost:5432/postgres',
+    'my_slot',
+    '5m',
+    'users.id=42' 
+);
+```
+
+## Configure replication type
+
+| Type | Description |
+|------|-------------|
+| 0 | Both: data and history are recorded in SQLite |
+| 1 | DataOnly: only data changes are recorded |
+| 2 | HistoryOnly: only history is stored |
+
+Example: 
+To skip history logging for a subscription, set `type` when inserting into `pg_sub`:
+
+```sql
+INSERT INTO pg_sub(connect, slot, publication, type)
+VALUES(
+    'postgres://rep_user:secret@127.0.0.1:5432/postgres',
+    'my_slot',
+    'my_publication',
+    1
+);
+```
+
+## Configuration
+
+Configure replication parameters on the virtual table:
+
+Param | Description | Default
+--- | --- | ---
+use_namespace | Keep schema/namespace instead of using the main database | false
+position_tracker_table | Table for replication position checkpoints | pg_sub_stat
+timeout | Timeout in milliseconds | 10000
+logger | Log destination: `stdout`, `stderr`, or `file:/path/to/log.txt` | 
+
+### Debugging
+
+Enable logging with:
+
+```sh
+export SQLITE_PG_LOG=1
+```
+
+Logs will print to stderr.

@@ -15,20 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type Change struct {
-	ServerTime   time.Time `json:"servertime"`
-	Kind         string    `json:"kind"`
-	Schema       string    `json:"schema"`
-	Table        string    `json:"table"`
-	ColumnNames  []string  `json:"columnnames"`
-	ColumnValues []any     `json:"columnvalues"`
-	OldKeys      struct {
-		KeyNames  []string `json:"keynames,omitempty"`
-		KeyValues []any    `json:"keyvalues,omitempty"`
-	} `json:"oldkeys"`
-	SQL string `json:"sql"`
-}
-
 type HandleChanges func(changeset []Change, currentPosition pglogrepl.LSN) error
 type CheckpointLoader func() (pglogrepl.LSN, error)
 
@@ -143,7 +129,6 @@ func (s *Subscription) Start(logger *slog.Logger, loadCheckpoint CheckpointLoade
 	logger.Info("Logical replication started", "slot", cfg.SlotName)
 	standbyMessageTimeout := cfg.Timeout
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
-
 	inStream := false
 	go func() {
 		defer conn.Close(context.Background())
@@ -358,8 +343,10 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 			case "json", "jsonb":
 				sqliteType = "JSONB"
 			}
-			colNameAndType = append(colNameAndType, fmt.Sprintf("%s %s", col.Name, sqliteType))
+		} else {
+			sqliteType = "BLOB"
 		}
+		colNameAndType = append(colNameAndType, fmt.Sprintf("%s %s", col.Name, sqliteType))
 	}
 	cfg, err := pgx.ParseConfig(s.cfg.DSN)
 	if err != nil {

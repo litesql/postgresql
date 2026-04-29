@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	_ "github.com/litesql/sqlite"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -46,7 +46,7 @@ func main() {
 	}
 	defer pgConn.Close(context.Background())
 
-	db, err := sql.Open("litesql", sqliteDSN)
+	db, err := sql.Open("sqlite", sqliteDSN)
 	if err != nil {
 		log.Fatal(err)
 	}

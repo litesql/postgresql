@@ -4,40 +4,61 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func Identify(dsn string) string {
+type SystemInfo struct {
+	SystemID string `json:"systemid"`
+	Timeline int32  `json:"timeline"`
+	XLogPos  string `json:"xlogpos"`
+	DBName   string `json:"dbname"`
+}
+
+func Identify(dsn string) (*SystemInfo, error) {
 	pgConfig, err := pgconn.ParseConfig(dsn)
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return nil, err
 	}
 	pgConfig.RuntimeParams["replication"] = "database"
 	conn, err := pgconn.ConnectConfig(context.Background(), pgConfig)
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return nil, err
 	}
 	defer conn.Close(context.Background())
 
 	sysident, err := pglogrepl.IdentifySystem(context.Background(), conn)
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return nil, err
 	}
-	return fmt.Sprintf(`{"systemid": "%s", "timeline": %d, "xlogpos": "%s", "dbname": "%s"}`, sysident.SystemID, sysident.Timeline, sysident.XLogPos, sysident.DBName)
+	return &SystemInfo{
+		SystemID: sysident.SystemID,
+		Timeline: sysident.Timeline,
+		XLogPos:  sysident.XLogPos.String(),
+		DBName:   sysident.DBName,
+	}, nil
 }
 
-func CreateSlot(dsn, slot string) string {
+type SlotInfo struct {
+	Name         string `json:"name"`
+	Plugin       string `json:"plugin"`
+	Database     string `json:"database"`
+	SnapshotName string `json:"snapshotName"`
+	RestartLSN   string `json:"restartLSN"`
+}
+
+func CreateSlot(dsn, slot string) (*SlotInfo, error) {
 	pgConfig, err := pgconn.ParseConfig(dsn)
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return nil, err
 	}
 	pgConfig.RuntimeParams["replication"] = "database"
 	conn, err := pgconn.ConnectConfig(context.Background(), pgConfig)
 	if err != nil {
-		return fmt.Sprintf(`{"error": %s}`, err.Error())
+		return nil, err
 	}
 	defer conn.Close(context.Background())
 
@@ -46,20 +67,26 @@ func CreateSlot(dsn, slot string) string {
 		Mode:      pglogrepl.LogicalReplication,
 	})
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return nil, err
 	}
-	return fmt.Sprintf(`{"slot": "%s", "plugin": "%s", "snapshot": "%s", "consistentPoint": "%s"}`, res.SlotName, res.OutputPlugin, res.SnapshotName, res.ConsistentPoint)
+	return &SlotInfo{
+		Name:         res.SlotName,
+		Plugin:       res.OutputPlugin,
+		Database:     pgConfig.Database,
+		SnapshotName: res.SnapshotName,
+		RestartLSN:   res.ConsistentPoint,
+	}, nil
 }
 
-func DropSlot(dsn, slot string) string {
+func DropSlot(dsn, slot string) error {
 	pgConfig, err := pgconn.ParseConfig(dsn)
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return err
 	}
 	pgConfig.RuntimeParams["replication"] = "database"
 	conn, err := pgconn.ConnectConfig(context.Background(), pgConfig)
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return err
 	}
 	defer conn.Close(context.Background())
 
@@ -67,9 +94,56 @@ func DropSlot(dsn, slot string) string {
 		Wait: true,
 	})
 	if err != nil {
-		return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+		return err
 	}
-	return fmt.Sprintf(`{"status": "slot %s dropped successfully"}`, slot)
+	return nil
+}
+
+type commandAndParams struct {
+	SQL    string
+	Params []any
+}
+
+func RevertChangeSet(dsn string, changeset []Change) error {
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(context.Background())
+
+	tx, err := conn.BeginTx(context.Background(), pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadWrite,
+	})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+
+	commands := make([]commandAndParams, 0, len(changeset))
+	for _, change := range changeset {
+		sql, params := change.RevertSQL()
+		if sql == "" {
+			continue
+		}
+		commands = append(commands, commandAndParams{
+			SQL:    sql,
+			Params: params,
+		})
+	}
+	slices.Reverse(commands)
+	for _, cmd := range commands {
+		_, err := tx.Exec(context.Background(), cmd.SQL, cmd.Params...)
+		if err != nil {
+			return err
+		}
+	}
+	err = tx.Commit(context.Background())
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type publicationTablesResult struct {
