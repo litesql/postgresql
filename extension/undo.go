@@ -65,9 +65,15 @@ func (m *Undo) Apply(ctx *sqlite.Context, values ...sqlite.Value) {
 			if strings.EqualFold(change.Table, tableName) {
 				if col != "" {
 					for i, column := range change.ColumnNames {
-						if strings.EqualFold(column, col) && strings.EqualFold(fmt.Sprint(change.ColumnValues[i]), value) {
-							filtered = append(filtered, change)
-							break
+						if strings.EqualFold(column, col) {
+							if strings.EqualFold(fmt.Sprint(change.ColumnValues[i]), value) {
+								filtered = append(filtered, change)
+								break
+							}
+							if len(change.OldKeys.KeyValues) > i && strings.EqualFold(fmt.Sprint(change.OldKeys.KeyValues[i]), value) {
+								filtered = append(filtered, change)
+								break
+							}
 						}
 					}
 					continue
