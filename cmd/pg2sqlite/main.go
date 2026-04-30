@@ -191,7 +191,7 @@ func createTable(conn *pgx.Conn, st schemaTable, db *sql.DB) error {
 		}
 	}
 
-	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS [%s](\n\t%s\n)", st.table, strings.Join(def, ",\n\t"))
+	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`(\n\t%s\n)", st.table, strings.Join(def, ",\n\t"))
 	_, err = db.Exec(query)
 	return err
 }
@@ -242,7 +242,7 @@ func createIndexes(conn *pgx.Conn, st schemaTable, db *sql.DB) error {
 			uniqueStr = "UNIQUE"
 		}
 		if len(columns) > 0 {
-			query := fmt.Sprintf("CREATE %s INDEX IF NOT EXISTS [%s] ON [%s](%s)", uniqueStr, name, st.table, strings.Join(columns, ", "))
+			query := fmt.Sprintf("CREATE %s INDEX IF NOT EXISTS `%s` ON `%s`(%s)", uniqueStr, name, st.table, strings.Join(columns, ", "))
 			_, err = db.Exec(query)
 			if err != nil {
 				return err
@@ -287,7 +287,7 @@ func createIndexesFromFKs(conn *pgx.Conn, st schemaTable, db *sql.DB) error {
 			return err
 		}
 		if len(columns) > 0 {
-			query := fmt.Sprintf("CREATE INDEX IF NOT EXISTS [%s] ON [%s](%s)", name, st.table, strings.Join(columns, ", "))
+			query := fmt.Sprintf("CREATE INDEX IF NOT EXISTS `%s` ON `%s`(%s)", name, st.table, strings.Join(columns, ", "))
 			_, err = db.Exec(query)
 			if err != nil {
 				return err
@@ -313,7 +313,7 @@ func copyData(conn *pgx.Conn, st schemaTable, db *sql.DB) error {
 	for _, fd := range rows.FieldDescriptions() {
 		columns = append(columns, fd.Name)
 	}
-	stmt, err := db.Prepare(fmt.Sprintf("REPLACE INTO [%s](%s) VALUES(%s)", st.table, strings.Join(columns, ", "), placeholders(len(columns))))
+	stmt, err := db.Prepare(fmt.Sprintf("REPLACE INTO `%s`(%s) VALUES(%s)", st.table, strings.Join(columns, ", "), placeholders(len(columns))))
 	if err != nil {
 		return err
 	}
@@ -407,7 +407,7 @@ type foreignKey struct {
 
 func (f foreignKey) SQL() string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("FOREIGN KEY (%s) REFERENCES [%s](%s)", strings.Join(f.columns, ", "), f.references.table, strings.Join(f.referencesColumns, ", ")))
+	sb.WriteString(fmt.Sprintf("FOREIGN KEY (%s) REFERENCES `%s`(%s)", strings.Join(f.columns, ", "), f.references.table, strings.Join(f.referencesColumns, ", ")))
 	if f.onDelete != "" {
 		sb.WriteString(" ON DELETE ")
 		sb.WriteString(f.onDelete)

@@ -236,7 +236,7 @@ func (vt *SubscriptionVirtualTable) handler(slot string, replType ReplicationTyp
 				var sql string
 				switch change.Kind {
 				case "INSERT":
-					sql = fmt.Sprintf("INSERT INTO [%s] (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
+					sql = fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
 					err = vt.conn.Exec(sql, nil, change.ColumnValues...)
 				case "UPDATE":
 					setClause := make([]string, len(change.ColumnNames))
@@ -257,7 +257,7 @@ func (vt *SubscriptionVirtualTable) handler(slot string, replType ReplicationTyp
 							whereClause[i] = fmt.Sprintf("%s = ?", col)
 						}
 					}
-					sql = fmt.Sprintf("UPDATE [%s] SET %s WHERE %s", tableName, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
+					sql = fmt.Sprintf("UPDATE `%s` SET %s WHERE %s", tableName, strings.Join(setClause, ", "), strings.Join(whereClause, " AND "))
 					err = vt.conn.Exec(sql, nil, args...)
 				case "DELETE":
 					whereClause := make([]string, len(change.ColumnNames))
@@ -270,7 +270,7 @@ func (vt *SubscriptionVirtualTable) handler(slot string, replType ReplicationTyp
 							whereClause[i] = fmt.Sprintf("%s = ?", col)
 						}
 					}
-					sql = fmt.Sprintf("DELETE FROM [%s] WHERE %s", tableName, strings.Join(whereClause, " AND "))
+					sql = fmt.Sprintf("DELETE FROM `%s` WHERE %s", tableName, strings.Join(whereClause, " AND "))
 					err = vt.conn.Exec(sql, nil, args...)
 				case "SQL":
 					err = vt.conn.Exec(change.SQL, nil)

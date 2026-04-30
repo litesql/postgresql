@@ -320,7 +320,7 @@ func (s *Subscription) decodeTruncateChanges(msg *pglogrepl.TruncateMessageV2, s
 			}
 			tableName = fmt.Sprintf("%s.%s", c.Schema, c.Table)
 		}
-		c.SQL = fmt.Sprintf("DELETE FROM [%s]", tableName)
+		c.SQL = fmt.Sprintf("DELETE FROM `%s`", tableName)
 		changes = append(changes, c)
 	}
 
@@ -396,7 +396,7 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 		}
 		tableName = fmt.Sprintf("%s.%s", c.Schema, c.Table)
 	}
-	c.SQL = fmt.Sprintf("CREATE TABLE IF NOT EXISTS [%s](\n\t%s\n)", tableName, strings.Join(colNameAndType, ",\n\t"))
+	c.SQL = fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`(\n\t%s\n)", tableName, strings.Join(colNameAndType, ",\n\t"))
 	return c, nil
 }
 
