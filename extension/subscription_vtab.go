@@ -236,7 +236,7 @@ func (vt *SubscriptionVirtualTable) handler(slot string, replType ReplicationTyp
 				var sql string
 				switch change.Kind {
 				case "INSERT":
-					sql = fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
+					sql = fmt.Sprintf("REPLACE INTO `%s` (%s) VALUES (%s)", tableName, strings.Join(change.ColumnNames, ", "), placeholders(len(change.ColumnValues)))
 					err = vt.conn.Exec(sql, nil, change.ColumnValues...)
 				case "UPDATE":
 					setClause := make([]string, len(change.ColumnNames))
