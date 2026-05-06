@@ -244,7 +244,7 @@ func (s *Subscription) process(walStart pglogrepl.LSN, walData []byte, serverTim
 		s.changes = make([]Change, 0)
 	case *pglogrepl.CommitMessage:
 		if s.handleFn != nil {
-			s.currentPosition = walStart + pglogrepl.LSN(len(walData))
+			s.currentPosition = walStart
 			return s.handleFn(s.changes, s.currentPosition)
 		}
 	case *pglogrepl.InsertMessageV2:
@@ -288,7 +288,7 @@ func (s *Subscription) process(walStart pglogrepl.LSN, walData []byte, serverTim
 		*inStream = false
 	case *pglogrepl.StreamCommitMessageV2:
 		if s.handleFn != nil {
-			s.currentPosition = walStart + pglogrepl.LSN(len(walData))
+			s.currentPosition = walStart
 			return s.handleFn(s.changes, s.currentPosition)
 		}
 	case *pglogrepl.StreamAbortMessageV2:

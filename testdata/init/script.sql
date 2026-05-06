@@ -11,6 +11,8 @@ CREATE TABLE users(
     details JSONB
 );
 
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO rep_user;
+
 ALTER TABLE users REPLICA IDENTITY FULL;
 
 CREATE PUBLICATION my_publication FOR TABLE users;
