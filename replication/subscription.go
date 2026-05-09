@@ -233,11 +233,17 @@ func (s *Subscription) process(walStart pglogrepl.LSN, walData []byte, serverTim
 	switch logicalMsg := logicalMsg.(type) {
 	case *pglogrepl.RelationMessageV2:
 		if _, ok := s.relations[logicalMsg.RelationID]; !ok {
-			change, err := s.decodeRelationChange(logicalMsg, typeMap)
+			createTable, err := s.decodeRelationChange(logicalMsg, typeMap)
 			if err != nil {
 				return err
 			}
-			s.changes = append(s.changes, change)
+			s.changes = append(s.changes, createTable)
+
+			createIndexes, err := s.decoreRelationIndexesChanges(logicalMsg)
+			if err != nil {
+				return err
+			}
+			s.changes = append(s.changes, createIndexes...)
 		}
 		s.relations[logicalMsg.RelationID] = logicalMsg
 	case *pglogrepl.BeginMessage:
@@ -398,6 +404,83 @@ func (s *Subscription) decodeRelationChange(rel *pglogrepl.RelationMessageV2, ty
 	}
 	c.SQL = fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`(\n\t%s\n)", tableName, strings.Join(colNameAndType, ",\n\t"))
 	return c, nil
+}
+
+func (s *Subscription) decoreRelationIndexesChanges(rel *pglogrepl.RelationMessageV2) ([]Change, error) {
+	cfg, err := pgx.ParseConfig(s.cfg.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse PostgreSQL dsn: %w", err)
+	}
+	delete(cfg.RuntimeParams, "replication")
+	conn, err := pgx.ConnectConfig(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to PostgreSQL server: %w", err)
+	}
+	defer conn.Close(context.Background())
+	rows, err := conn.Query(context.Background(),
+		`SELECT i.relname as index_name,    
+    	ix.indisunique as unique,
+    	ARRAY_AGG(a.attname) as column_names
+		FROM
+    		pg_class t,
+    		pg_class i,
+		    pg_index ix,
+    		pg_attribute a,
+			pg_namespace n
+		WHERE
+			t.relnamespace = n.oid
+    		AND t.oid = ix.indrelid
+    		AND i.oid = ix.indexrelid
+    		AND a.attrelid = t.oid
+    		AND a.attnum = ANY(ix.indkey)
+    		AND t.relkind = 'r'
+    		AND ix.indisprimary = 'f'    
+    		AND n.nspname = $1
+			AND t.relname = $2			   
+		GROUP BY    
+    		i.relname,    
+    		ix.indisunique
+		ORDER BY
+    		i.relname;`, rel.Namespace, rel.RelationName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var changes []Change
+	for rows.Next() {
+		var (
+			name    string
+			unique  bool
+			columns []string
+		)
+		err := rows.Scan(&name, &unique, &columns)
+		if err != nil {
+			return nil, err
+		}
+		var uniqueStr string
+		if unique {
+			uniqueStr = "UNIQUE"
+		}
+		if len(columns) > 0 {
+			c := Change{
+				Schema: rel.Namespace,
+				Table:  rel.RelationName,
+				Kind:   "SQL",
+			}
+			tableName := c.Table
+			if s.useNamespace {
+				if c.Schema == "public" {
+					c.Schema = "main"
+				}
+				tableName = fmt.Sprintf("%s.%s", c.Schema, c.Table)
+			}
+			c.SQL = fmt.Sprintf("CREATE %s INDEX IF NOT EXISTS `%s` ON `%s`(%s)", uniqueStr, name, tableName, strings.Join(columns, ", "))
+			changes = append(changes, c)
+		}
+	}
+
+	return changes, nil
 }
 
 func (s *Subscription) decodeChange(relationID uint32, tuple *pglogrepl.TupleData, oldTuple *pglogrepl.TupleData) (Change, error) {
